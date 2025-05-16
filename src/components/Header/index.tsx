@@ -1,5 +1,5 @@
 import Link from "next/link";
-import DarkModeSwitcher from "./DarkModeSwitcher";
+// import DarkModeSwitcher from "./DarkModeSwitcher";
 import DropdownNotification from "./DropdownNotification";
 import DropdownUser from "./DropdownUser";
 import Image from "next/image";
@@ -82,7 +82,7 @@ const Header = (props: {
             {/* <!-- Search Form --> */}
 
             {/* <!-- Dark Mode Toggle --> */}
-            <DarkModeSwitcher />
+            {/* <DarkModeSwitcher /> */}
             {/* <!-- Dark Mode Toggle --> */}
 
             {/* <!-- Notification Menu Area --> */}

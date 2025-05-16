@@ -40,7 +40,7 @@ export default function LoginPage() {
           const data = await response.json(); // Parse the JSON response
           if (response.ok) {
             setCookie("token", data.authtoken, { maxAge: 60 * 60 * 24 * 7 });
-            // router.push("/dashboard");
+            router.push("/dashboard");
           } else {
             setLoading(false);
           }

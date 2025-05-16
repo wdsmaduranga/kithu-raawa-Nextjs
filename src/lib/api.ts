@@ -50,12 +50,78 @@ export const getChatSession = async (sessionId: number) => {
   const response = await api.get(`/chat-sessions/${sessionId}`);
   return response.data;
 };
-
+export const activeChatSession = async () => {
+  const response = await api.get(`/chat-session/active`);
+  // http://127.0.0.1:8000/api/chat-sessions/active
+  return response.data;
+};
 export const acceptChatSession = async (sessionId: number) => {
-  const response = await api.post(`/chat-sessions/${sessionId}/accept`);
+  const response = await api.post(`/reverend/chat-sessions/${sessionId}/accept`);
   return response.data;
 };
 export const closeChatSession = async (sessionId: number) => {
-  const response = await api.post(`/chat-sessions/${sessionId}/close`);
+  const response = await api.post(`/reverend/chat-sessions/${sessionId}/close`);
+  return response.data;
+};
+
+export const markMessageAsDelivered = async (messageId: number) => {
+  const response = await api.post(`/messages/${messageId}/delivered`);
+  return response.data;
+};
+
+export const markMessageAsSeen = async (messageId: number) => {
+  const response = await api.post(`/messages/${messageId}/seen`);
+  return response.data;
+};
+// const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/chat-sessions/${session.id}/unread-count`, {
+export const unreadCount = async (sessionId: number) => {
+    const response = await api.get(`/chat-sessions/${sessionId}/unread-count`);
+    return response.data;
+  };
+
+  export const SessionLatestMessage = async (sessionId: number) => {
+    const response = await api.get(`/chat-sessions/${sessionId}/latest-message`);
+    return response.data;
+  };
+
+  // Reverend Father specific endpoints
+export const getuserChatSessions = async () => {
+  const response = await api.get('/chat-sessions');
+  return response.data;
+};
+
+export const getAllChatSessions = async () => {
+  const response = await api.get('/chat-session/all');
+  return response.data;
+};
+
+// Call related endpoints
+export const initiateCall = async (sessionId: number) => {
+  const response = await api.post(`/call/${sessionId}/initiate`);
+  return response.data;
+};
+
+export const sendCallOffer = async (sessionId: number, offer: RTCSessionDescriptionInit) => {
+  const response = await api.post(`/call/${sessionId}/offer`, { offer });
+  return response.data;
+};
+
+export const sendCallAnswer = async (sessionId: number, answer: RTCSessionDescriptionInit) => {
+  const response = await api.post(`/call/${sessionId}/answer`, { answer });
+  return response.data;
+};
+
+export const sendIceCandidate = async (sessionId: number, candidate: RTCIceCandidate) => {
+  const response = await api.post(`/call/${sessionId}/ice-candidate`, { candidate });
+  return response.data;
+};
+
+export const endCall = async (sessionId: number) => {
+  const response = await api.post(`/call/${sessionId}/end`);
+  return response.data;
+};
+
+export const rejectCall = async (sessionId: number) => {
+  const response = await api.post(`/call/${sessionId}/reject`);
   return response.data;
 };

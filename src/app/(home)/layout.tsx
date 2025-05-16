@@ -2,14 +2,19 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import '@/app/globals.css';
 import Header from '@/components/header'
-import { ChatNotification } from '@/components/meditation/ChatNotification';
 // import { AuthProvider } from '@/components/providers/AuthProvider';
+// import { Toaster } from '@/components/ui/sonner';
+import { MessengerButton } from '@/components/chat/MessengerButton';
+import { ChatNotifications } from '@/components/notifications/ChatNotifications';
+import { ReverendNotifications } from '@/components/notifications/ReverendNotifications';
+import { AuthProvider } from '@/provider/AuthProvider';
+import { Toaster } from "@/components/ui/toaster"
+import { UserNotificationProvider } from "@/components/providers/UserNotificationProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
 });
-import toast, { Toaster } from 'react-hot-toast';
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
@@ -31,11 +36,18 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        {/* {children}
+        <Toaster position="top-right" reverseOrder={false} /> */}
+        <AuthProvider>
+        <UserNotificationProvider>
         <Header/>
-        {children}
-        <Toaster position="top-right" reverseOrder={false} />
-        <ChatNotification />
-
+          {children}
+          {/* <MessengerButton /> */}
+          {/* <ChatNotifications /> */}
+          <ReverendNotifications />
+          <Toaster/>
+          </UserNotificationProvider>
+        </AuthProvider>
         </body>
     </html>
   );

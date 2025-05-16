@@ -550,10 +550,10 @@ const config: Config = {
   				'Segoe UI Symbol',
   				'Noto Color Emoji'
   			],
-  			mono: [
-  				'var(--font-mono)',
-  				...require("tailwindcss/defaultTheme").fontFamily.mono
-  			],
+  			// mono: [
+  			// 	'var(--font-mono)',
+			// 	...require( 'tailwindcss/defaultTheme'),.fontFamily.mono'
+  			// ],
   			sans: [
   				'var(--font-sans)',
   				'ui-sans-serif',

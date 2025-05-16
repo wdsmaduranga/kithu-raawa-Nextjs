@@ -13,15 +13,9 @@
   "aliases": {
     "components": "@/components",
     "utils": "@/lib/utils",
-    "ui": "@/components/plate-ui",
+    "ui": "@/components/ui",
     "lib": "@/lib",
     "hooks": "@/hooks"
   },
-  "iconLibrary": "lucide",
-  "registries": {
-    "plate": {
-      "style": "default",
-      "url": "https://platejs.org/r"
-    }
-  }
+  "iconLibrary": "lucide"
 }
