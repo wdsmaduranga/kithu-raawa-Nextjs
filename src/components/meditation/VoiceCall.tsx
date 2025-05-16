@@ -125,7 +125,7 @@ export function VoiceCall({ sessionId, userId }: VoiceCallProps) {
         title: "Call Failed",
         description: "Could not initiate the call. Please try again.",
       });
-      endCall();
+      endCall(sessionId);
     }
   };
 
