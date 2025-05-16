@@ -42,14 +42,14 @@ export function ChatInfoPanel({ onClose, session, messages }: ChatInfoPanelProps
       <div className="p-4 space-y-4">
         <div className="flex flex-col items-center space-y-3 pb-4 border-b">
           <Avatar className="h-20 w-20 border-2 border-primary">
-            <AvatarImage src={`/images/categories/${session.category.icon}`} />
+            <AvatarImage src={`/images/categories/${session?.category?.icon}`} />
             <AvatarFallback className="text-2xl bg-primary/10 text-primary">
-              {session.category.name.charAt(0)}
+              {session?.category?.name.charAt(0)}
             </AvatarFallback>
           </Avatar>
           <div className="text-center">
-            <h4 className="font-semibold text-lg">{session.category.name}</h4>
-            <p className="text-sm text-muted-foreground">{session.category.description}</p>
+            <h4 className="font-semibold text-lg">{session?.category?.name}</h4>
+            <p className="text-sm text-muted-foreground">{session?.category?.description}</p>
           </div>
           <Badge className={getStatusColor(session.status)}>
             {session.status.charAt(0).toUpperCase() + session.status.slice(1)}
@@ -88,7 +88,7 @@ export function ChatInfoPanel({ onClose, session, messages }: ChatInfoPanelProps
         <div className="space-y-3">
           <h4 className="font-medium">Category Information</h4>
           <p className="text-sm text-muted-foreground">
-            {session.category.description}
+            {session?.category?.description}
           </p>
         </div>
 
