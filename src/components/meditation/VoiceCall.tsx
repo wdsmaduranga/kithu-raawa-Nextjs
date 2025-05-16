@@ -28,6 +28,7 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
   const remoteStream = useRef<MediaStream>(new MediaStream());
   const audioRef = useRef<HTMLAudioElement>(null);
   const ringToneRef = useRef<HTMLAudioElement | null>(null);
+  const ringTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const { toast } = useToast();
 
   // Create audio elements for ringtones
@@ -36,17 +37,46 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
     ringToneRef.current.loop = true;
     
     return () => {
-      if (ringToneRef.current) {
-        ringToneRef.current.pause();
-        ringToneRef.current = null;
+      stopRingtone();
+      if (ringTimeoutRef.current) {
+        clearTimeout(ringTimeoutRef.current);
       }
     };
   }, []);
+
+  const startRinging = () => {
+    // Start ringtone
+    ringToneRef.current?.play().catch(console.error);
+    
+    // Vibrate if supported (mobile devices)
+    if (navigator.vibrate) {
+      const vibratePattern: number[] = [500, 200, 500, 200, 500];
+      navigator.vibrate(vibratePattern);
+    }
+
+    // Auto-stop ringing after 30 seconds if call not answered
+    ringTimeoutRef.current = setTimeout(() => {
+      handleRejectCall();
+      toast({
+        title: "Missed Call",
+        description: `You missed a call from ${userName}`,
+        duration: 5000,
+      });
+    }, 30000);
+  };
 
   const stopRingtone = () => {
     if (ringToneRef.current) {
       ringToneRef.current.pause();
       ringToneRef.current.currentTime = 0;
+    }
+    // Stop vibration
+    if (navigator.vibrate) {
+      navigator.vibrate(0);
+    }
+    // Clear auto-stop timeout
+    if (ringTimeoutRef.current) {
+      clearTimeout(ringTimeoutRef.current);
     }
   };
 
@@ -59,6 +89,37 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
     };
 
     peerConnection.current = new RTCPeerConnection(configuration);
+
+    // Add connection state monitoring
+    peerConnection.current.onconnectionstatechange = () => {
+      if (peerConnection.current) {
+        switch(peerConnection.current.connectionState) {
+          case "disconnected":
+            toast({
+              title: "Connection Issue",
+              description: "Call quality may be affected. Trying to reconnect...",
+              duration: 5000,
+            });
+            break;
+          case "failed":
+            toast({
+              variant: "destructive",
+              title: "Connection Lost",
+              description: "Call ended due to connection failure",
+              duration: 3000,
+            });
+            cleanup();
+            break;
+          case "connected":
+            toast({
+              title: "Connected",
+              description: "Call quality is stable",
+              duration: 3000,
+            });
+            break;
+        }
+      }
+    };
 
     // Handle ICE candidates
     peerConnection.current.onicecandidate = async (event) => {
@@ -83,7 +144,15 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
 
     // Get local stream
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,
+          channelCount: 1
+        } 
+      });
       localStream.current = stream;
       stream.getTracks().forEach((track) => {
         if (peerConnection.current) {
@@ -224,7 +293,7 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
         setCallerId(data.data.from);
         setIncomingCall(true);
         setCallStatus('ringing');
-        ringToneRef.current?.play().catch(console.error);
+        startRinging();
       }
     });
 
@@ -289,24 +358,28 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
       <Dialog open={incomingCall} onOpenChange={(open) => !open && handleRejectCall()}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Incoming Call</DialogTitle>
-            <DialogDescription>
+            <DialogTitle className="flex items-center justify-center text-xl">
+              <div className="w-3 h-3 bg-green-500 rounded-full animate-ping mr-2" />
+              Incoming Call
+            </DialogTitle>
+            <DialogDescription className="text-center text-lg">
               {userName} is calling you...
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-center space-x-4 py-4">
             <Button 
               onClick={handleAcceptCall}
-              className="bg-green-500 hover:bg-green-600"
+              className="bg-green-500 hover:bg-green-600 px-6 py-4 text-lg"
             >
-              <Phone className="h-4 w-4 mr-2" />
+              <Phone className="h-5 w-5 mr-2" />
               Accept
             </Button>
             <Button 
               onClick={handleRejectCall}
               variant="destructive"
+              className="px-6 py-4 text-lg"
             >
-              <PhoneOff className="h-4 w-4 mr-2" />
+              <PhoneOff className="h-5 w-5 mr-2" />
               Reject
             </Button>
           </div>
