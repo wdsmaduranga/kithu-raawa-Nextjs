@@ -1,7 +1,7 @@
 'use client'
 import { Mail } from "lucide-react";
 import { Suspense, useState } from "react";
-import PlateEditor from '@/components/custom-editor'
+// import PlateEditor from '@/components/custom-editor'
 import QuillEditor from '@/components/quilEditor'
 export default function AdminNewsPage() {
         const [email, setEmail] = useState("");
@@ -75,7 +75,7 @@ export default function AdminNewsPage() {
               placeholder="Post Title"
             />
           </div>
-          <PlateEditor />
+          {/* <PlateEditor /> */}
 {/* <QuillEditor/> */}
           </form>
             </div>
