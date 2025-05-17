@@ -210,13 +210,32 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
       setCallStatus('connecting');
       stopRingtone();
 
-      // Create and send answer
+      // Wait for the remote offer to be set before creating answer
+      if (!peerConnection.current?.remoteDescription) {
+        console.log('Waiting for remote offer...');
+        toast({
+          title: "⏳ Connecting",
+          description: "Establishing connection...",
+          duration: 3000,
+        });
+        return;
+      }
+
+      // Create and send answer only after remote description is set
+      console.log('Creating answer...');
       const answer = await peerConnection.current?.createAnswer();
+      console.log('Setting local description...', answer);
       await peerConnection.current?.setLocalDescription(answer);
       
       if (answer) {
+        console.log('Sending answer...');
         await sendCallAnswer(sessionId, answer);
         setCallStatus('connected');
+        toast({
+          title: "✅ Connected",
+          description: "Call connection established",
+          duration: 3000,
+        });
       }
     } catch (error) {
       console.error('Error accepting call:', error);
@@ -226,6 +245,39 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
         description: "Could not accept the call. Please try again.",
       });
       cleanup();
+    }
+  };
+
+  // Handle remote offer when received
+  const handleRemoteOffer = async (offer: RTCSessionDescriptionInit) => {
+    try {
+      if (!peerConnection.current) {
+        console.error('No peer connection available');
+        return;
+      }
+      
+      console.log('Setting remote description from offer...');
+      await peerConnection.current.setRemoteDescription(new RTCSessionDescription(offer));
+      
+      // Create answer immediately after setting remote description
+      console.log('Creating answer after remote offer...');
+      const answer = await peerConnection.current.createAnswer();
+      console.log('Setting local description...', answer);
+      await peerConnection.current.setLocalDescription(answer);
+      
+      if (answer) {
+        console.log('Sending answer...');
+        await sendCallAnswer(sessionId, answer);
+        setCallStatus('connected');
+      }
+    } catch (error) {
+      console.error('Error handling remote offer:', error);
+      toast({
+        variant: "destructive",
+        title: "Connection Error",
+        description: "Failed to process call offer. Please try again.",
+        duration: 3000,
+      });
     }
   };
 
@@ -323,29 +375,10 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
       } 
     }) => {
       console.log('Call offer received:', data);
- 
       console.log('peerConnection.current:', peerConnection.current);
       
-      // Convert both to numbers for comparison
       if (Number(data.sessionId) === Number(sessionId) && peerConnection.current) {
-        try {
-          await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.data.offer));
-          setCallStatus('connecting');
-          toast({
-            title: "🔄 Connecting Call",
-            description: `Connecting with ${data.data.name}...`,
-            duration: 5000,
-          });
-        } catch (error) {
-          console.error('Error setting remote description:', error);
-          setCallStatus('ended');
-          toast({
-            variant: "destructive",
-            title: "❌ Connection Failed",
-            description: `Could not connect with ${data.data.name}. Please try again.`,
-            duration: 5000,
-          });
-        }
+        await handleRemoteOffer(data.data.offer);
       }
     });
 
