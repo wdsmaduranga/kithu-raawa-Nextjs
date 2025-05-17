@@ -21,7 +21,7 @@ export function NotificationProvider({
   useEffect(() => {
     if (!user) return;
 
-    Pusher.logToConsole = false;
+    Pusher.logToConsole = true;
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
     });

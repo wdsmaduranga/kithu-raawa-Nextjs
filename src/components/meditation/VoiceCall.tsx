@@ -20,6 +20,7 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
   const [callStatus, setCallStatus] = useState<CallStatus>('idle');
   const [incomingCall, setIncomingCall] = useState(false);
   const [callerId, setCallerId] = useState<number | null>(null);
+  const [callerName, setCallerName] = useState<string>('');
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const localStream = useRef<MediaStream | null>(null);
   const remoteStream = useRef<MediaStream>(new MediaStream());
@@ -278,54 +279,127 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
 
   // Initialize Pusher and handle real-time events
   useEffect(() => {
-    Pusher.logToConsole = false;
+    Pusher.logToConsole = true;
     if (!userId) return;
 
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
     });
 
-    const channel = pusher.subscribe(`user.${userId}`);
+    const channel = pusher.subscribe(`voice.${userId}`);
 
     // Handle incoming call
-    channel.bind('voice.initiated', (data: { sessionId: number, data: { from: number } }) => {
-      if (data.sessionId === sessionId) {
+    channel.bind('voice.initiated', (data: { 
+      sessionId: string | number, 
+      data: { 
+        from: number,
+        name: string 
+      } 
+    }) => {
+      console.log('Incoming call received:', data);
+  
+      if (Number(data.sessionId) === Number(sessionId)) {
         setCallerId(data.data.from);
+        setCallerName(data.data.name);
         setIncomingCall(true);
         setCallStatus('ringing');
         startRinging();
+        toast({
+          title: "📞 Incoming Call",
+          description: `${data.data.name} is calling you...`,
+          duration: 30000,
+          variant: "default",
+        });
       }
     });
 
     // Handle call offer
-    channel.bind('voice.offer', async (data: { sessionId: number, data: { offer: RTCSessionDescriptionInit } }) => {
-      if (data.sessionId === sessionId && peerConnection.current) {
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.data.offer));
-      }
-    });
-
-    // Handle call answer
-    channel.bind('voice.answer', async (data: { sessionId: number, data: { answer: RTCSessionDescriptionInit } }) => {
-      if (data.sessionId === sessionId && peerConnection.current) {
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.data.answer));
-        setCallStatus('connected');
-        stopRingtone();
+    channel.bind('voice.offer', async (data: { 
+      sessionId: string | number, 
+      data: { 
+        from: number,
+        name: string,
+        offer: RTCSessionDescriptionInit 
+      } 
+    }) => {
+      console.log('Call offer received:', data);
+ 
+      console.log('peerConnection.current:', peerConnection.current);
+      
+      // Convert both to numbers for comparison
+      if (Number(data.sessionId) === Number(sessionId) && peerConnection.current) {
+        try {
+          await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.data.offer));
+          setCallStatus('connecting');
+          toast({
+            title: "🔄 Connecting Call",
+            description: `Connecting with ${data.data.name}...`,
+            duration: 5000,
+          });
+        } catch (error) {
+          console.error('Error setting remote description:', error);
+          setCallStatus('ended');
+          toast({
+            variant: "destructive",
+            title: "❌ Connection Failed",
+            description: `Could not connect with ${data.data.name}. Please try again.`,
+            duration: 5000,
+          });
+        }
       }
     });
 
     // Handle ICE candidates
     channel.bind('voice.ice-candidate', async (data: { sessionId: number, data: { candidate: RTCIceCandidateInit } }) => {
+      console.log('ICE candidate received:', data);
       if (data.sessionId === sessionId && peerConnection.current && data.data.candidate) {
-        await peerConnection.current.addIceCandidate(new RTCIceCandidate(data.data.candidate));
+        try {
+          await peerConnection.current.addIceCandidate(new RTCIceCandidate(data.data.candidate));
+          console.log('ICE candidate added successfully');
+        } catch (error) {
+          console.error('Error adding ICE candidate:', error);
+        }
+      }
+    });
+
+    // Handle call answer
+    channel.bind('voice.answer', async (data: { 
+      sessionId: string | number, 
+      data: { 
+        answer: RTCSessionDescriptionInit,
+        name: string 
+      } 
+    }) => {
+      console.log('Call answer received:', data);
+      if (Number(data.sessionId) === Number(sessionId) && peerConnection.current) {
+        try {
+          await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.data.answer));
+          setCallStatus('connected');
+          stopRingtone();
+          toast({
+            title: "✅ Call Connected",
+            description: "You are now connected with " + userName,
+            duration: 3000,
+          });
+        } catch (error) {
+          console.error('Error setting remote description for answer:', error);
+          setCallStatus('ended');
+          toast({
+            variant: "destructive",
+            title: "❌ Connection Error",
+            description: "Failed to connect the call. Please try again.",
+            duration: 5000,
+          });
+        }
       }
     });
 
     // Handle call ended
-    channel.bind('voice.ended', (data: { sessionId: number }) => {
-      if (data.sessionId === sessionId) {
+    channel.bind('voice.ended', (data: { sessionId: string | number }) => {
+      if (Number(data.sessionId) === Number(sessionId)) {
         toast({
-          title: "Call Ended",
-          description: "The other participant ended the call",
+          title: "📞 Call Ended",
+          description: "The call has been ended",
           duration: 3000,
         });
         cleanup();
@@ -333,11 +407,11 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
     });
 
     // Handle call rejected
-    channel.bind('voice.rejected', (data: { sessionId: number }) => {
-      if (data.sessionId === sessionId) {
+    channel.bind('voice.rejected', (data: { sessionId: string | number }) => {
+      if (Number(data.sessionId) === Number(sessionId)) {
         toast({
-          title: "Call Rejected",
-          description: "The other participant rejected the call",
+          title: "❌ Call Rejected",
+          description: `${userName} rejected the call`,
           duration: 3000,
         });
         cleanup();
@@ -346,7 +420,7 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
 
     return () => {
       channel.unbind_all();
-      pusher.unsubscribe(`user.${userId}`);
+      pusher.unsubscribe(`voice.${userId}`);
       cleanup();
     };
   }, [sessionId, userId]);
@@ -360,10 +434,10 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
           <DialogHeader>
             <DialogTitle className="flex items-center justify-center text-xl">
               <div className="w-3 h-3 bg-green-500 rounded-full animate-ping mr-2" />
-              Incoming Call
+              📞 Incoming Call
             </DialogTitle>
             <DialogDescription className="text-center text-lg">
-              {userName} is calling you...
+              {callerName || userName} is calling you...
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-center space-x-4 py-4">
@@ -424,10 +498,23 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
         )}
       </div>
 
-      {callStatus === 'connected' && (
-        <div className="fixed bottom-4 right-4 bg-primary text-primary-foreground px-4 py-2 rounded-full shadow-lg flex items-center space-x-2">
-          <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-          <span>Call in progress</span>
+      {/* Call Status Indicator */}
+      {callStatus !== 'idle' && (
+        <div className={`fixed bottom-4 right-4 px-4 py-2 rounded-full shadow-lg flex items-center space-x-2 ${
+          callStatus === 'connected' ? 'bg-green-500' :
+          callStatus === 'connecting' ? 'bg-yellow-500' :
+          callStatus === 'ringing' ? 'bg-blue-500' : 'bg-red-500'
+        } text-white`}>
+          <div className={`w-2 h-2 rounded-full ${
+            callStatus === 'connected' ? 'animate-pulse bg-white' :
+            callStatus === 'connecting' ? 'animate-spin bg-white' :
+            callStatus === 'ringing' ? 'animate-ping bg-white' : 'bg-white'
+          }`} />
+          <span>
+            {callStatus === 'connected' ? '✅ Call in progress' :
+             callStatus === 'connecting' ? '🔄 Connecting...' :
+             callStatus === 'ringing' ? '📞 Ringing...' : '❌ Call ended'}
+          </span>
         </div>
       )}
     </>

@@ -138,9 +138,10 @@ export default function ChatPage() {
   
   // Separate useEffect for Pusher subscription
   useEffect(() => {
-    Pusher.logToConsole = false;
     if (!user || !session) return;
 
+    Pusher.logToConsole = true;
+    
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
     });
