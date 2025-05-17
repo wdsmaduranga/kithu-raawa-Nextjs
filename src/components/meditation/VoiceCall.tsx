@@ -14,9 +14,6 @@ interface VoiceCallProps {
 
 type CallStatus = 'idle' | 'ringing' | 'connecting' | 'connected' | 'ended';
 
-const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_APP_KEY || '';
-const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_APP_CLUSTER || '';
-
 export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallProps) {
   const [isCallActive, setIsCallActive] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -281,8 +278,11 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
 
   // Initialize Pusher and handle real-time events
   useEffect(() => {
-    const pusher = new Pusher(PUSHER_KEY, {
-      cluster: PUSHER_CLUSTER,
+    Pusher.logToConsole = false;
+    if (!userId) return;
+
+    const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
+      cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
     });
 
     const channel = pusher.subscribe(`user.${userId}`);
