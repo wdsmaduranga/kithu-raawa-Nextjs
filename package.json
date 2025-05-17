@@ -51,6 +51,7 @@
     "@types/react": "18.2.22",
     "@types/react-dom": "18.2.7",
     "@uploadthing/react": "^7.1.0",
+    "agora-rtc-sdk-ng": "^4.23.3",
     "ai": "^4.1.26",
     "autoprefixer": "10.4.15",
     "axios": "^1.8.3",
