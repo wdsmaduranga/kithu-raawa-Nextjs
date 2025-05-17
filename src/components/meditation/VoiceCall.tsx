@@ -28,6 +28,7 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
   const ringToneRef = useRef<HTMLAudioElement | null>(null);
   const ringTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const { toast } = useToast();
+  const [pendingOffer, setPendingOffer] = useState<RTCSessionDescriptionInit | null>(null);
 
   // Create audio elements for ringtones
   useEffect(() => {
@@ -204,45 +205,47 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
 
   const handleAcceptCall = async () => {
     try {
+      console.log('Accepting call, initializing connection...');
       await initializePeerConnection();
+      
+      if (!peerConnection.current) {
+        throw new Error('Failed to create peer connection');
+      }
+
+      if (!pendingOffer) {
+        console.error('No pending offer available');
+        throw new Error('No offer available');
+      }
+
+      console.log('Setting remote description from stored offer...');
+      await peerConnection.current.setRemoteDescription(new RTCSessionDescription(pendingOffer));
+
+      console.log('Creating answer...');
+      const answer = await peerConnection.current.createAnswer();
+      
+      console.log('Setting local description...', answer);
+      await peerConnection.current.setLocalDescription(answer);
+
+      console.log('Sending answer to peer...');
+      await sendCallAnswer(sessionId, answer);
+      
       setIncomingCall(false);
       setIsCallActive(true);
-      setCallStatus('connecting');
+      setCallStatus('connected');
       stopRingtone();
-
-      // Wait for the remote offer to be set before creating answer
-      if (!peerConnection.current?.remoteDescription) {
-        console.log('Waiting for remote offer...');
-        toast({
-          title: "⏳ Connecting",
-          description: "Establishing connection...",
-          duration: 3000,
-        });
-        return;
-      }
-
-      // Create and send answer only after remote description is set
-      console.log('Creating answer...');
-      const answer = await peerConnection.current?.createAnswer();
-      console.log('Setting local description...', answer);
-      await peerConnection.current?.setLocalDescription(answer);
       
-      if (answer) {
-        console.log('Sending answer...');
-        await sendCallAnswer(sessionId, answer);
-        setCallStatus('connected');
-        toast({
-          title: "✅ Connected",
-          description: "Call connection established",
-          duration: 3000,
-        });
-      }
+      toast({
+        title: "✅ Connected",
+        description: "Call connection established",
+        duration: 3000,
+      });
     } catch (error) {
       console.error('Error accepting call:', error);
       toast({
         variant: "destructive",
         title: "Call Failed",
         description: "Could not accept the call. Please try again.",
+        duration: 3000,
       });
       cleanup();
     }
@@ -303,6 +306,7 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
 
   const cleanup = () => {
     stopRingtone();
+    setPendingOffer(null);
     
     if (localStream.current) {
       localStream.current.getTracks().forEach(track => track.stop());
@@ -375,10 +379,11 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
       } 
     }) => {
       console.log('Call offer received:', data);
-      console.log('peerConnection.current:', peerConnection.current);
       
-      if (Number(data.sessionId) === Number(sessionId) && peerConnection.current) {
-        await handleRemoteOffer(data.data.offer);
+      if (Number(data.sessionId) === Number(sessionId)) {
+        console.log('Storing offer for later use');
+        setPendingOffer(data.data.offer);
+        setCallerName(data.data.name);
       }
     });
 
