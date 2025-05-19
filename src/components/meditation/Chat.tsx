@@ -48,7 +48,7 @@ export function Chat({ sessionId, userId }: ChatProps) {
 
   return (
     <div className="relative">
-    <Card className="flex flex-col h-[600px] shadow-lg border-t-4 border-t-primary">
+      <Card className="flex flex-col h-[600px] shadow-lg border-t-4 border-t-primary">
         <ChatHeader 
           session={session}
           latestMessage={latestMessage}
@@ -71,17 +71,17 @@ export function Chat({ sessionId, userId }: ChatProps) {
           inputRef={inputRef as React.RefObject<HTMLTextAreaElement>}
           disabled={session.status !== 'active'}
         />
-    </Card>
+      </Card>
 
-    <AnimatePresence>
-      {showInfo && (
+      <AnimatePresence>
+        {showInfo && (
           <ChatInfoPanel
             onClose={() => setShowInfo(false)}
             session={session}
             messages={messages}
           />
-      )}
-    </AnimatePresence>
-  </div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }

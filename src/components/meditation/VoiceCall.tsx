@@ -1,33 +1,32 @@
 import { useEffect, useRef, useState } from 'react';
-import AgoraRTC, { IAgoraRTCClient, IAgoraRTCRemoteUser, IMicrophoneAudioTrack } from 'agora-rtc-sdk-ng';
+import Pusher from 'pusher-js';
+import {  endCall, rejectCall, initiateCall } from '@/lib/api';
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Phone, PhoneOff, Mic, MicOff } from "lucide-react";
+import { Phone, PhoneOff } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { initiateCall, endCall, rejectCall } from '@/lib/api';
-import Pusher from 'pusher-js';
 
 interface VoiceCallProps {
   sessionId: number;
-  userId: number;
+  isActive: boolean;
+  onCallEnd: () => void;
+  isIncoming?: boolean;
   userName?: string;
 }
 
 type CallStatus = 'idle' | 'ringing' | 'connecting' | 'connected' | 'ended';
 
-// Initialize Agora client
-const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_APP_KEY || '';
+const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_APP_CLUSTER || '';
 
-export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallProps) {
-  const [isCallActive, setIsCallActive] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
+export function VoiceCall({ sessionId, isActive, onCallEnd, isIncoming = false, userName = 'User' }: VoiceCallProps) {
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream] = useState<MediaStream>(new MediaStream());
   const [callStatus, setCallStatus] = useState<CallStatus>('idle');
-  const [incomingCall, setIncomingCall] = useState(false);
-  const [callerId, setCallerId] = useState<number | null>(null);
-  const [callerName, setCallerName] = useState<string>('');
-  const localTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
+  const peerConnection = useRef<RTCPeerConnection | null>(null);
+  const pusherClient = useRef<Pusher | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
   const ringToneRef = useRef<HTMLAudioElement | null>(null);
-  const ringTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const { toast } = useToast();
 
   // Create audio elements for ringtones
@@ -36,108 +35,48 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
     ringToneRef.current.loop = true;
     
     return () => {
-      stopRingtone();
-      if (ringTimeoutRef.current) {
-        clearTimeout(ringTimeoutRef.current);
+      if (ringToneRef.current) {
+        ringToneRef.current.pause();
+        ringToneRef.current = null;
       }
     };
   }, []);
 
-  const startRinging = () => {
-    ringToneRef.current?.play().catch(console.error);
-    
-    if (navigator.vibrate) {
-      const vibratePattern: number[] = [500, 200, 500, 200, 500];
-      navigator.vibrate(vibratePattern);
+  useEffect(() => {
+    if (isActive) {
+      if (isIncoming) {
+        setCallStatus('ringing');
+        // Play ringtone for incoming call
+        ringToneRef.current?.play().catch(console.error);
+      } else {
+        startCall();
+      }
     }
+    return () => {
+      cleanup();
+    };
+  }, [isActive, isIncoming]);
 
-    ringTimeoutRef.current = setTimeout(() => {
-      handleRejectCall();
-      toast({
-        title: "Missed Call",
-        description: `You missed a call from ${userName}`,
-        duration: 5000,
-      });
-    }, 30000);
-  };
-
-  const stopRingtone = () => {
-    if (ringToneRef.current) {
-      ringToneRef.current.pause();
-      ringToneRef.current.currentTime = 0;
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.srcObject = remoteStream;
     }
-    if (navigator.vibrate) {
-      navigator.vibrate(0);
-    }
-    if (ringTimeoutRef.current) {
-      clearTimeout(ringTimeoutRef.current);
-    }
-  };
-
-  const initializeAgoraClient = async () => {
-    try {
-      // Join the channel using sessionId as the channel name
-      await client.join(
-        process.env.NEXT_PUBLIC_AGORA_APP_ID!,
-        sessionId.toString(),
-        null, // Use null for temp token, or implement token server
-        userId
-      );
-
-      // Create and publish local audio track
-      const audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
-      localTrackRef.current = audioTrack;
-      await client.publish([audioTrack]);
-
-      // Set up event listeners for remote users
-      client.on("user-published", async (user: IAgoraRTCRemoteUser, mediaType: "audio" | "video") => {
-        if (mediaType === "audio") {
-          await client.subscribe(user, mediaType);
-          user.audioTrack?.play();
-          setCallStatus('connected');
-          stopRingtone();
-        }
-      });
-
-      client.on("user-left", () => {
-        toast({
-          title: "Call Ended",
-          description: "The other participant has left the call",
-          duration: 3000,
-        });
-        cleanup();
-      });
-
-      return true;
-    } catch (error) {
-      console.error('Error initializing Agora client:', error);
-      toast({
-        variant: "destructive",
-        title: "Connection Error",
-        description: "Failed to initialize call. Please check your internet connection.",
-        duration: 3000,
-      });
-      return false;
-    }
-  };
+  }, [remoteStream]);
 
   const startCall = async () => {
     try {
+      setCallStatus('connecting');
       await initiateCall(sessionId);
-      const success = await initializeAgoraClient();
+      await initializeCall();
       
-      if (success) {
-        setIsCallActive(true);
-        setCallStatus('connecting');
-        
-        toast({
-          title: "Calling...",
-          description: `Calling ${userName}`,
-          duration: 3000,
-        });
+      toast({
+        title: "Calling...",
+        description: `Calling ${userName}`,
+        duration: 3000,
+      });
 
-        ringToneRef.current?.play().catch(console.error);
-      }
+      // Play ringtone for outgoing call
+      ringToneRef.current?.play().catch(console.error);
     } catch (error) {
       console.error('Error starting call:', error);
       toast({
@@ -146,237 +85,241 @@ export function VoiceCall({ sessionId, userId, userName = 'User' }: VoiceCallPro
         description: "Could not initiate the call. Please try again.",
       });
       cleanup();
+      onCallEnd();
+    }
+  };
+
+  const initializeCall = async () => {
+    try {
+      // Initialize WebRTC
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setLocalStream(stream);
+
+      // Create RTCPeerConnection
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+
+      // Add local stream
+      stream.getTracks().forEach(track => {
+        pc.addTrack(track, stream);
+      });
+
+      // Handle incoming tracks
+      pc.ontrack = (event) => {
+        event.streams[0].getTracks().forEach(track => {
+          remoteStream.addTrack(track);
+        });
+      };
+
+      // Initialize Pusher with authentication
+      pusherClient.current = new Pusher(PUSHER_KEY, {
+        cluster: PUSHER_CLUSTER,
+        authEndpoint: `${process.env.NEXT_PUBLIC_API_BASE_URL}/broadcasting/auth`,
+        auth: {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`,
+            'Accept': 'application/json',
+          },
+        },
+      });
+
+      const channel = pusherClient.current.subscribe(`presence-call-channel-${sessionId}`);
+
+      // Handle subscription success
+      channel.bind('pusher:subscription_succeeded', (members: any) => {
+        console.log('Successfully subscribed to presence channel', members);
+        setCallStatus('connected');
+      });
+
+      // Handle subscription error
+      channel.bind('pusher:subscription_error', (error: any) => {
+        console.error('Presence channel subscription error:', error);
+        toast({
+          variant: "destructive",
+          title: "Connection Error",
+          description: "Failed to establish call connection. Please try again.",
+        });
+        handleCallEnded("Connection failed");
+      });
+
+      // Handle member changes
+      channel.bind('pusher:member_added', (member: any) => {
+        console.log('Member joined:', member);
+      });
+
+      channel.bind('pusher:member_removed', (member: any) => {
+        console.log('Member left:', member);
+        handleCallEnded("The other participant left the call");
+      });
+
+      // Handle incoming offer
+      channel.bind('offer', async (data: { offer: RTCSessionDescriptionInit }) => {
+        if (!pc.currentRemoteDescription) {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          // await sendCallAnswer(sessionId, answer);
+          setCallStatus('connected');
+          stopRingtone();
+        }
+      });
+
+      // Handle incoming answer
+      channel.bind('answer', async (data: { answer: RTCSessionDescriptionInit }) => {
+        if (!pc.currentRemoteDescription) {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+          setCallStatus('connected');
+          stopRingtone();
+        }
+      });
+
+      // Handle call rejected
+      channel.bind('call-rejected', () => {
+        handleCallEnded("Call was rejected");
+      });
+
+      // Handle ICE candidates
+      channel.bind('ice-candidate', async (data: { candidate: RTCIceCandidateInit }) => {
+        if (data.candidate) {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        }
+      });
+
+      // Handle call end
+      channel.bind('call-ended', () => {
+        handleCallEnded("Call ended");
+      });
+
+      // Send ICE candidates
+      pc.onicecandidate = async (event) => {
+        if (event.candidate) {
+          // await sendIceCandidate(sessionId, event.candidate);
+        }
+      };
+
+      peerConnection.current = pc;
+
+      // If not incoming call, create and send offer
+      if (!isIncoming) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        // await sendCallOffer(sessionId, offer);
+      }
+
+    } catch (error) {
+      console.error('Error initializing call:', error);
+      handleCallEnded("Failed to initialize call");
     }
   };
 
   const handleAcceptCall = async () => {
-    try {
-      const success = await initializeAgoraClient();
-      
-      if (success) {
-        setIncomingCall(false);
-        setIsCallActive(true);
-        setCallStatus('connected');
-        stopRingtone();
-        
-        toast({
-          title: "✅ Connected",
-          description: "Call connection established",
-          duration: 3000,
-        });
-      }
-    } catch (error) {
-      console.error('Error accepting call:', error);
-      toast({
-        variant: "destructive",
-        title: "Call Failed",
-        description: "Could not accept the call. Please try again.",
-        duration: 3000,
-      });
-      cleanup();
-    }
+    stopRingtone();
+    await initializeCall();
   };
 
   const handleRejectCall = async () => {
-    try {
-      await rejectCall(sessionId);
-      setIncomingCall(false);
-      stopRingtone();
-      cleanup();
-    } catch (error) {
-      console.error('Error rejecting call:', error);
-    }
-  };
-
-  const handleEndCall = async () => {
-    try {
-      await endCall(sessionId);
-      cleanup();
-    } catch (error) {
-      console.error('Error ending call:', error);
-    }
-  };
-
-  const cleanup = async () => {
     stopRingtone();
-    
-    if (localTrackRef.current) {
-      localTrackRef.current.stop();
-      localTrackRef.current.close();
-      localTrackRef.current = null;
+    await rejectCall(sessionId);
+    cleanup();
+    onCallEnd();
+  };
+
+  const handleCallEnded = (message: string) => {
+    toast({
+      title: "Call Ended",
+      description: message,
+      duration: 3000,
+    });
+    stopRingtone();
+    cleanup();
+    onCallEnd();
+  };
+
+  const stopRingtone = () => {
+    if (ringToneRef.current) {
+      ringToneRef.current.pause();
+      ringToneRef.current.currentTime = 0;
     }
-    
-    await client.leave();
-    
-    setIsCallActive(false);
+  };
+
+  const cleanup = () => {
+    stopRingtone();
+
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      setLocalStream(null);
+    }
+
+    if (peerConnection.current) {
+      peerConnection.current.close();
+      peerConnection.current = null;
+    }
+
+    if (pusherClient.current) {
+      pusherClient.current.unsubscribe(`presence-call-channel-${sessionId}`);
+      pusherClient.current.disconnect();
+      pusherClient.current = null;
+    }
+
     setCallStatus('ended');
-    setIncomingCall(false);
-    setCallerId(null);
   };
-
-  const toggleMute = () => {
-    if (localTrackRef.current) {
-      if (isMuted) {
-        localTrackRef.current.setEnabled(true);
-      } else {
-        localTrackRef.current.setEnabled(false);
-      }
-      setIsMuted(!isMuted);
-    }
-  };
-
-  // Initialize Pusher and handle real-time events for call signaling
-  useEffect(() => {
-    if (!userId) return;
-
-    const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
-      cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
-    });
-
-    const channel = pusher.subscribe(`voice.${userId}`);
-
-    // Handle incoming call
-    channel.bind('voice.initiated', (data: { 
-      sessionId: string | number, 
-      data: { 
-        from: number,
-        name: string 
-      } 
-    }) => {
-      if (Number(data.sessionId) === Number(sessionId)) {
-        setCallerId(data.data.from);
-        setCallerName(data.data.name);
-        setIncomingCall(true);
-        setCallStatus('ringing');
-        startRinging();
-        toast({
-          title: "📞 Incoming Call",
-          description: `${data.data.name} is calling you...`,
-          duration: 30000,
-          variant: "default",
-        });
-      }
-    });
-
-    // Handle call ended
-    channel.bind('voice.ended', (data: { sessionId: string | number }) => {
-      if (Number(data.sessionId) === Number(sessionId)) {
-        toast({
-          title: "📞 Call Ended",
-          description: "The call has been ended",
-          duration: 3000,
-        });
-        cleanup();
-      }
-    });
-
-    // Handle call rejected
-    channel.bind('voice.rejected', (data: { sessionId: string | number }) => {
-      if (Number(data.sessionId) === Number(sessionId)) {
-        toast({
-          title: "❌ Call Rejected",
-          description: `${userName} rejected the call`,
-          duration: 3000,
-        });
-        cleanup();
-      }
-    });
-
-    return () => {
-      channel.unbind_all();
-      pusher.unsubscribe(`voice.${userId}`);
-      cleanup();
-    };
-  }, [sessionId, userId]);
 
   return (
     <>
-      <Dialog open={incomingCall} onOpenChange={(open) => !open && handleRejectCall()}>
+      <audio ref={audioRef} autoPlay playsInline />
+      
+      <Dialog open={callStatus === 'ringing'} onOpenChange={() => {}}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="flex items-center justify-center text-xl">
-              <div className="w-3 h-3 bg-green-500 rounded-full animate-ping mr-2" />
-              📞 Incoming Call
-            </DialogTitle>
-            <DialogDescription className="text-center text-lg">
-              {callerName || userName} is calling you...
+            <DialogTitle>{isIncoming ? 'Incoming Call' : 'Calling...'}</DialogTitle>
+            <DialogDescription>
+              {isIncoming ? `${userName} is calling...` : `Calling ${userName}...`}
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-center space-x-4 py-4">
-            <Button 
-              onClick={handleAcceptCall}
-              className="bg-green-500 hover:bg-green-600 px-6 py-4 text-lg"
-            >
-              <Phone className="h-5 w-5 mr-2" />
-              Accept
-            </Button>
-            <Button 
-              onClick={handleRejectCall}
-              variant="destructive"
-              className="px-6 py-4 text-lg"
-            >
-              <PhoneOff className="h-5 w-5 mr-2" />
-              Reject
-            </Button>
+            {isIncoming ? (
+              <>
+                <Button 
+                  onClick={handleAcceptCall}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  <Phone className="h-5 w-5 mr-2" />
+                  Accept
+                </Button>
+                <Button 
+                  onClick={handleRejectCall}
+                  variant="destructive"
+                >
+                  <PhoneOff className="h-5 w-5 mr-2" />
+                  Reject
+                </Button>
+              </>
+            ) : (
+              <Button 
+                onClick={handleRejectCall}
+                variant="destructive"
+              >
+                <PhoneOff className="h-5 w-5 mr-2" />
+                Cancel
+              </Button>
+            )}
           </div>
         </DialogContent>
       </Dialog>
 
-      <div className="flex items-center gap-2">
-        {!isCallActive ? (
-          <Button
-            onClick={startCall}
-            variant="outline"
-            size="icon"
-            className="rounded-full bg-green-500 hover:bg-green-600"
+      {callStatus === 'connected' && (
+        <div className="fixed bottom-4 right-4 bg-primary text-primary-foreground px-4 py-2 rounded-full shadow-lg flex items-center space-x-2">
+          <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+          <span>Call in progress</span>
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className="ml-2 hover:bg-primary-foreground/10"
+            onClick={() => endCall(sessionId)}
           >
-            <Phone className="h-4 w-4 text-white" />
+            <PhoneOff className="h-4 w-4" />
           </Button>
-        ) : (
-          <>
-            <Button
-              onClick={handleEndCall}
-              variant="outline"
-              size="icon"
-              className="rounded-full bg-red-500 hover:bg-red-600"
-            >
-              <PhoneOff className="h-4 w-4 text-white" />
-            </Button>
-            <Button
-              onClick={toggleMute}
-              variant="outline"
-              size="icon"
-              className={`rounded-full ${
-                isMuted ? 'bg-gray-500' : 'bg-blue-500 hover:bg-blue-600'
-              }`}
-            >
-              {isMuted ? (
-                <MicOff className="h-4 w-4 text-white" />
-              ) : (
-                <Mic className="h-4 w-4 text-white" />
-              )}
-            </Button>
-          </>
-        )}
-      </div>
-
-      {/* Call Status Indicator */}
-      {callStatus !== 'idle' && (
-        <div className={`fixed bottom-4 right-4 px-4 py-2 rounded-full shadow-lg flex items-center space-x-2 ${
-          callStatus === 'connected' ? 'bg-green-500' :
-          callStatus === 'connecting' ? 'bg-yellow-500' :
-          callStatus === 'ringing' ? 'bg-blue-500' : 'bg-red-500'
-        } text-white`}>
-          <div className={`w-2 h-2 rounded-full ${
-            callStatus === 'connected' ? 'animate-pulse bg-white' :
-            callStatus === 'connecting' ? 'animate-spin bg-white' :
-            callStatus === 'ringing' ? 'animate-ping bg-white' : 'bg-white'
-          }`} />
-          <span>
-            {callStatus === 'connected' ? '✅ Call in progress' :
-             callStatus === 'connecting' ? '🔄 Connecting...' :
-             callStatus === 'ringing' ? '📞 Ringing...' : '❌ Call ended'}
-          </span>
         </div>
       )}
     </>

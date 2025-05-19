@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { getCookie } from 'cookies-next';
 
-const api = axios.create({
+export const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_BASE_URL,
 });
 
@@ -101,18 +101,13 @@ export const initiateCall = async (sessionId: number) => {
   return response.data;
 };
 
-export const sendCallOffer = async (sessionId: number, offer: RTCSessionDescriptionInit) => {
-  const response = await api.post(`/call/${sessionId}/offer`, { offer });
+export const getCallToken = async (sessionId: number) => {
+  const response = await api.get(`/call/${sessionId}/token`);
   return response.data;
 };
 
-export const sendCallAnswer = async (sessionId: number, answer: RTCSessionDescriptionInit) => {
-  const response = await api.post(`/call/${sessionId}/answer`, { answer });
-  return response.data;
-};
-
-export const sendIceCandidate = async (sessionId: number, candidate: RTCIceCandidate) => {
-  const response = await api.post(`/call/${sessionId}/ice-candidate`, { candidate });
+export const acceptCall = async (sessionId: number) => {
+  const response = await api.post(`/call/${sessionId}/accept`);
   return response.data;
 };
 

@@ -33,7 +33,6 @@ import { useUserStore } from "@/stores/userStore"
 import type { ChatSession, Message } from "@/lib/types"
 import { getChatSessions, sendMessage, closeChatSession, markMessageAsDelivered, markMessageAsSeen, getMessages, unreadCount } from "@/lib/api"
 import Pusher from "pusher-js"
-import { VoiceCall } from "@/components/meditation/VoiceCall"
 
 // Quick responses data
 const quickResponses = [
@@ -92,8 +91,8 @@ export default function ChatPage() {
   const { user, fetchUser } = useUserStore()
   const [unreadCounts, setUnreadCounts] = useState<{[key: number]: number}>({})
 
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null!)
+  const textareaRef = useRef<HTMLTextAreaElement>(null!)
   const processedMessagesRef = useRef<{[key: number]: {delivered: boolean, seen: boolean}}>({})
 
   useEffect(() => {
@@ -138,10 +137,9 @@ export default function ChatPage() {
   
   // Separate useEffect for Pusher subscription
   useEffect(() => {
+    Pusher.logToConsole = false;
     if (!user || !session) return;
 
-    Pusher.logToConsole = true;
-    
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
     });
@@ -551,9 +549,31 @@ export default function ChatPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
-                  {session.status === 'active' && (
-                    <VoiceCall sessionId={session.id} userId={user?.id || 0} />
-                  )}
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground">
+                          <Phone className="h-5  w-5" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Voice Call</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground">
+                          <Video className="h-5 w-5" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Video Call</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
 
                   <TooltipProvider>
                     <Tooltip>

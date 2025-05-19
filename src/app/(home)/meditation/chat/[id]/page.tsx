@@ -14,19 +14,19 @@ export default function ChatPage() {
     if (!user) {
       fetchUser();
     }
-  }, [user, fetchUser]);
+}, [user, fetchUser]);
 
-  useEffect(() => {
-    if (params?.id) {
+useEffect(() => {
+  if (params?.id) {
       const id = parseInt(params.id as string);
       if (!isNaN(id)) {
-        setSessionId(id);
+          setSessionId(id);
       } else {
-        console.error("Invalid session ID");
+          console.error("Invalid session ID");
         router.push("/error");
       }
-    }
-  }, [params, router]);
+  }
+}, [params, router]);
 
   if (!sessionId || !user) {
     return (
