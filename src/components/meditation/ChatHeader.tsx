@@ -134,9 +134,13 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
     // Listen for call status updates
     channel.bind('call.answered', async (data: any) => {
+      console.log('answered');
+      console.log(data);
       if (data.session?.id === session.id) {
         setCallStatus('connected');
-        console.log(data);
+        console.log(data.channel_name);
+        console.log(data.token);
+        console.log(user?.id);
         try {
           // Join the Agora channel
           await joinAgoraChannel(

@@ -265,7 +265,9 @@ export function ReverendChatArea({
     try {
       const response = await acceptCall(session.id)
       setCallStatus('connected')
-      console.log(response);
+      console.log(response.channel_name);
+      console.log(response.token);
+      console.log(user!.id);
       // Join the Agora channel
       await joinAgoraChannel(
         process.env.NEXT_PUBLIC_AGORA_APP_ID!,
