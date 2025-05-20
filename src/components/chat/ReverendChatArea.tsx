@@ -173,6 +173,7 @@ export function ReverendChatArea({
     channel.bind('call.answered', async (data: any) => {
       if (data.session?.id === session.id) {
         setCallStatus('connected');
+        console.log(data);
         try {
           // Join the Agora channel
           await joinAgoraChannel(
@@ -264,7 +265,7 @@ export function ReverendChatArea({
     try {
       const response = await acceptCall(session.id)
       setCallStatus('connected')
-      
+      console.log(response);
       // Join the Agora channel
       await joinAgoraChannel(
         process.env.NEXT_PUBLIC_AGORA_APP_ID!,
@@ -408,6 +409,15 @@ export function ReverendChatArea({
               onKeyDown={handleKeyPress}
           />
           <div className="absolute bottom-2 right-2 flex items-center space-x-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 rounded-full"
+              onClick={handleInitiateCall}
+              disabled={callStatus !== 'idle'}
+            >
+              <Phone className="h-4 w-4" />
+            </Button>
             <Dialog open={showQuickResponses} onOpenChange={setShowQuickResponses}>
               <DialogContent className="sm:max-w-[525px]">
                 <DialogHeader>

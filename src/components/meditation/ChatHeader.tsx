@@ -136,6 +136,7 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
     channel.bind('call.answered', async (data: any) => {
       if (data.session?.id === session.id) {
         setCallStatus('connected');
+        console.log(data);
         try {
           // Join the Agora channel
           await joinAgoraChannel(
