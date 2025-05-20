@@ -86,6 +86,7 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
   useEffect(() => {
     if (!user) return;
+    // Pusher.logToConsole = true;
 
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
