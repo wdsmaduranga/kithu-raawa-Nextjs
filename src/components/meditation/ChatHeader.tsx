@@ -201,12 +201,12 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       setShowCallDialog(true)
       const response = await initiateCall(session.id)
       // Join the Agora channel
-      await joinAgoraChannel(
-        process.env.NEXT_PUBLIC_AGORA_APP_ID!,
-        response.channel_name,
-        response.token,
-        user!.id
-      );
+      // await joinAgoraChannel(
+      //   process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+      //   response.channel_name,
+      //   response.token,
+      //   user!.id
+      // );
     } catch (error) {
       console.error('Failed to initiate call:', error)
       toast({
