@@ -22,6 +22,13 @@ import { useUserStore } from "@/stores/userStore"
 import { initiateCall, acceptCall, rejectCall, endCall } from "@/lib/api"
 import Pusher from "pusher-js"
 
+// Import Agora types only
+import type { 
+  IAgoraRTCClient, 
+  IAgoraRTCRemoteUser, 
+  IMicrophoneAudioTrack 
+} from 'agora-rtc-sdk-ng';
+
 interface ReverendChatAreaProps {
   session: ChatSession
   messages: Message[]
@@ -60,64 +67,178 @@ export function ReverendChatArea({
   const [showCallDialog, setShowCallDialog] = useState(false)
   const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'incoming' | 'connected'>('idle')
   const [incomingCallData, setIncomingCallData] = useState<any>(null)
+  const [agoraClient, setAgoraClient] = useState<IAgoraRTCClient | null>(null)
+  const [localAudioTrack, setLocalAudioTrack] = useState<IMicrophoneAudioTrack | null>(null)
+  const [isAgoraReady, setIsAgoraReady] = useState(false)
+  const [AgoraRTC, setAgoraRTC] = useState<any>(null)
+
+  // Initialize Agora on client side
+  useEffect(() => {
+    const initAgora = async () => {
+      try {
+        // This will only run on client side
+        if (typeof window !== 'undefined') {
+          const Agora = await import('agora-rtc-sdk-ng');
+          setAgoraRTC(Agora);
+          setIsAgoraReady(true);
+        }
+      } catch (error) {
+        console.error('Failed to initialize Agora:', error);
+      }
+    };
+
+    initAgora();
+  }, []);
+
+  // Initialize Agora client
+  const initializeAgoraClient = async () => {
+    if (!isAgoraReady || !AgoraRTC) return null;
+    
+    if (!agoraClient) {
+      const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
+      setAgoraClient(client);
+      return client;
+    }
+    return agoraClient;
+  };
+
+  // Join Agora channel
+  const joinAgoraChannel = async (appId: string, channel: string, token: string, uid: number) => {
+    if (!isAgoraReady || !AgoraRTC) {
+      throw new Error('Agora is not ready');
+    }
+
+    const client = await initializeAgoraClient();
+    if (!client) {
+      throw new Error('Failed to initialize Agora client');
+    }
+
+    try {
+      // Join the channel
+      await client.join(appId, channel, token, uid);
+
+      // Create and publish local audio track
+      const audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+      await client.publish([audioTrack]);
+      setLocalAudioTrack(audioTrack);
+
+      // Set up event handlers
+      client.on('user-published', async (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
+        await client.subscribe(user, mediaType);
+      });
+
+      client.on('user-unpublished', (user: IAgoraRTCRemoteUser) => {
+        client.unsubscribe(user);
+      });
+
+      return { client, audioTrack };
+    } catch (error) {
+      console.error('Error joining channel:', error);
+      throw error;
+    }
+  };
+
+  // Leave Agora channel
+  const leaveAgoraChannel = async () => {
+    if (!isAgoraReady) return;
+
+    if (localAudioTrack) {
+      localAudioTrack.close();
+      setLocalAudioTrack(null);
+    }
+
+    if (agoraClient) {
+      await agoraClient.leave();
+      setAgoraClient(null);
+    }
+  };
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !isAgoraReady) return;
 
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
     })
 
-    // Subscribe to the user's channel
     const channel = pusher.subscribe(`user.${user.id}`)
 
     // Listen for incoming calls
-    channel.bind('call.incoming', (data: any) => {
-      setIncomingCallData(data)
-      setCallStatus('incoming')
-      setShowCallDialog(true)
+    channel.bind('call.incoming', async (data: any) => {
+      setIncomingCallData(data);
+      setCallStatus('incoming');
+      setShowCallDialog(true);
     })
 
     // Listen for call status updates
-    channel.bind('call.answered', (data: any) => {
+    channel.bind('call.answered', async (data: any) => {
       if (data.session?.id === session.id) {
-        setCallStatus('connected')
+        setCallStatus('connected');
+        try {
+          // Join the Agora channel
+          await joinAgoraChannel(
+            process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+            data.channel_name,
+            data.token,
+            user?.id
+          );
+        } catch (error) {
+          console.error('Failed to join Agora channel:', error);
+          toast({
+            variant: "destructive",
+            title: "Call Error",
+            description: "Failed to establish voice connection",
+          });
+        }
       }
     })
 
-    channel.bind('call.rejected', (data: any) => {
-      if (data.session?.id === session.id) {
-        setCallStatus('idle')
-        setShowCallDialog(false)
-        toast({
-          title: "Call Rejected",
-          description: "The other party rejected the call",
-        })
-      }
+    channel.bind('call.rejected', () => {
+      setCallStatus('idle')
+      setShowCallDialog(false)
+      toast({
+        title: "Call Rejected",
+        description: "The other party rejected the call",
+      })
     })
 
-    channel.bind('call.ended', (data: any) => {
-      if (data.session?.id === session.id) {
-        setCallStatus('idle')
-        setShowCallDialog(false)
-        toast({
-          title: "Call Ended",
-          description: "The call has ended",
-        })
-      }
+    channel.bind('call.ended', async () => {
+      setCallStatus('idle')
+      setShowCallDialog(false)
+      await leaveAgoraChannel();
+      toast({
+        title: "Call Ended",
+        description: "The call has ended",
+      })
     })
 
     return () => {
       channel.unbind_all()
       pusher.unsubscribe(`user.${user.id}`)
+      leaveAgoraChannel();
     }
-  }, [user?.id, session.id])
+  }, [user?.id, session.id, isAgoraReady])
 
   const handleInitiateCall = async () => {
+    if (!isAgoraReady) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Voice call is not ready. Please try again.",
+      });
+      return;
+    }
+
     try {
       setCallStatus('calling')
       setShowCallDialog(true)
-      await initiateCall(session.id)
+      const response = await initiateCall(session.id)
+      // Join the Agora channel
+      await joinAgoraChannel(
+        process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+        response.channel_name,
+        response.token,
+        user!.id
+      );
     } catch (error) {
       console.error('Failed to initiate call:', error)
       toast({
@@ -131,9 +252,26 @@ export function ReverendChatArea({
   }
 
   const handleAcceptCall = async () => {
+    if (!isAgoraReady) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Voice call is not ready. Please try again.",
+      });
+      return;
+    }
+
     try {
-      await acceptCall(session.id)
+      const response = await acceptCall(session.id)
       setCallStatus('connected')
+      
+      // Join the Agora channel
+      await joinAgoraChannel(
+        process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+        response.channel_name,
+        response.token,
+        user!.id
+      );
     } catch (error) {
       console.error('Failed to accept call:', error)
       toast({
@@ -159,6 +297,7 @@ export function ReverendChatArea({
       await endCall(session.id)
       setCallStatus('idle')
       setShowCallDialog(false)
+      await leaveAgoraChannel();
     } catch (error) {
       console.error('Failed to end call:', error)
       toast({

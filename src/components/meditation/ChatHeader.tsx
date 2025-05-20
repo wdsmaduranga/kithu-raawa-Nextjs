@@ -10,7 +10,7 @@ import { initiateCall, acceptCall, rejectCall, endCall } from "@/lib/api"
 import { useToast } from "@/hooks/use-toast"
 import Pusher from "pusher-js"
 import { useUserStore } from "@/stores/userStore"
-import AgoraRTC, { 
+import type { 
   IAgoraRTCClient, 
   IAgoraRTCRemoteUser, 
   IMicrophoneAudioTrack 
@@ -31,9 +31,31 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
   const { user } = useUserStore()
   const [agoraClient, setAgoraClient] = useState<IAgoraRTCClient | null>(null)
   const [localAudioTrack, setLocalAudioTrack] = useState<IMicrophoneAudioTrack | null>(null)
+  const [isAgoraReady, setIsAgoraReady] = useState(false)
+  const [AgoraRTC, setAgoraRTC] = useState<any>(null)
+
+  // Initialize Agora on client side
+  useEffect(() => {
+    const initAgora = async () => {
+      try {
+        // This will only run on client side
+        if (typeof window !== 'undefined') {
+          const Agora = await import('agora-rtc-sdk-ng');
+          setAgoraRTC(Agora);
+          setIsAgoraReady(true);
+        }
+      } catch (error) {
+        console.error('Failed to initialize Agora:', error);
+      }
+    };
+
+    initAgora();
+  }, []);
 
   // Initialize Agora client
-  const initializeAgoraClient = () => {
+  const initializeAgoraClient = async () => {
+    if (!isAgoraReady || !AgoraRTC) return null;
+    
     if (!agoraClient) {
       const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
       setAgoraClient(client);
@@ -44,7 +66,14 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
   // Join Agora channel
   const joinAgoraChannel = async (appId: string, channel: string, token: string, uid: number) => {
-    const client = initializeAgoraClient();
+    if (!isAgoraReady || !AgoraRTC) {
+      throw new Error('Agora is not ready');
+    }
+
+    const client = await initializeAgoraClient();
+    if (!client) {
+      throw new Error('Failed to initialize Agora client');
+    }
 
     try {
       // Join the channel
@@ -73,6 +102,8 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
   // Leave Agora channel
   const leaveAgoraChannel = async () => {
+    if (!isAgoraReady) return;
+
     if (localAudioTrack) {
       localAudioTrack.close();
       setLocalAudioTrack(null);
@@ -85,8 +116,8 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
   };
 
   useEffect(() => {
-    if (!user) return;
-    // Pusher.logToConsole = true;
+    if (!user || !isAgoraReady) return;
+    Pusher.logToConsole = true;
 
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
@@ -103,7 +134,6 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
     // Listen for call status updates
     channel.bind('call.answered', async (data: any) => {
-      
       if (data.session?.id === session.id) {
         setCallStatus('connected');
         try {
@@ -149,9 +179,18 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       pusher.unsubscribe(`user.${user.id}`)
       leaveAgoraChannel();
     }
-  }, [user?.id])
+  }, [user?.id, session.id, isAgoraReady])
 
   const handleInitiateCall = async () => {
+    if (!isAgoraReady) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Voice call is not ready. Please try again.",
+      });
+      return;
+    }
+
     try {
       setCallStatus('calling')
       setShowCallDialog(true)
@@ -176,6 +215,15 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
   }
 
   const handleAcceptCall = async () => {
+    if (!isAgoraReady) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Voice call is not ready. Please try again.",
+      });
+      return;
+    }
+
     try {
       const response = await acceptCall(session.id)
       setCallStatus('connected')
