@@ -10,6 +10,11 @@ import { initiateCall, acceptCall, rejectCall, endCall } from "@/lib/api"
 import { useToast } from "@/hooks/use-toast"
 import Pusher from "pusher-js"
 import { useUserStore } from "@/stores/userStore"
+import AgoraRTC, { 
+  IAgoraRTCClient, 
+  IAgoraRTCRemoteUser, 
+  IMicrophoneAudioTrack 
+} from 'agora-rtc-sdk-ng';
 
 interface ChatHeaderProps {
   session: ChatSession;
@@ -24,6 +29,60 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
   const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'incoming' | 'connected'>('idle')
   const [incomingCallData, setIncomingCallData] = useState<any>(null)
   const { user } = useUserStore()
+  const [agoraClient, setAgoraClient] = useState<IAgoraRTCClient | null>(null)
+  const [localAudioTrack, setLocalAudioTrack] = useState<IMicrophoneAudioTrack | null>(null)
+
+  // Initialize Agora client
+  const initializeAgoraClient = () => {
+    if (!agoraClient) {
+      const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
+      setAgoraClient(client);
+      return client;
+    }
+    return agoraClient;
+  };
+
+  // Join Agora channel
+  const joinAgoraChannel = async (appId: string, channel: string, token: string, uid: number) => {
+    const client = initializeAgoraClient();
+
+    try {
+      // Join the channel
+      await client.join(appId, channel, token, uid);
+
+      // Create and publish local audio track
+      const audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+      await client.publish([audioTrack]);
+      setLocalAudioTrack(audioTrack);
+
+      // Set up event handlers
+      client.on('user-published', async (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
+        await client.subscribe(user, mediaType);
+      });
+
+      client.on('user-unpublished', (user: IAgoraRTCRemoteUser) => {
+        client.unsubscribe(user);
+      });
+
+      return { client, audioTrack };
+    } catch (error) {
+      console.error('Error joining channel:', error);
+      throw error;
+    }
+  };
+
+  // Leave Agora channel
+  const leaveAgoraChannel = async () => {
+    if (localAudioTrack) {
+      localAudioTrack.close();
+      setLocalAudioTrack(null);
+    }
+
+    if (agoraClient) {
+      await agoraClient.leave();
+      setAgoraClient(null);
+    }
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -35,15 +94,34 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
     const channel = pusher.subscribe(`user.${user.id}`)
 
     // Listen for incoming calls
-    channel.bind('call.incoming', (data: any) => {
-      setIncomingCallData(data)
-      setCallStatus('incoming')
-      setShowCallDialog(true)
+    channel.bind('call.incoming', async (data: any) => {
+      setIncomingCallData(data);
+      setCallStatus('incoming');
+      setShowCallDialog(true);
     })
 
     // Listen for call status updates
-    channel.bind('call.answered', () => {
-      setCallStatus('connected')
+    channel.bind('call.answered', async (data: any) => {
+      
+      if (data.session?.id === session.id) {
+        setCallStatus('connected');
+        try {
+          // Join the Agora channel
+          await joinAgoraChannel(
+            process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+            data.channel_name,
+            data.token,
+            user?.id
+          );
+        } catch (error) {
+          console.error('Failed to join Agora channel:', error);
+          toast({
+            variant: "destructive",
+            title: "Call Error",
+            description: "Failed to establish voice connection",
+          });
+        }
+      }
     })
 
     channel.bind('call.rejected', () => {
@@ -55,9 +133,10 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       })
     })
 
-    channel.bind('call.ended', () => {
+    channel.bind('call.ended', async () => {
       setCallStatus('idle')
       setShowCallDialog(false)
+      await leaveAgoraChannel();
       toast({
         title: "Call Ended",
         description: "The call has ended",
@@ -66,15 +145,23 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
     return () => {
       channel.unbind_all()
-      pusher.unsubscribe(`user.${session.user_id}`)
+      pusher.unsubscribe(`user.${user.id}`)
+      leaveAgoraChannel();
     }
-  }, [session.user_id])
+  }, [user?.id])
 
   const handleInitiateCall = async () => {
     try {
       setCallStatus('calling')
       setShowCallDialog(true)
-      await initiateCall(session.id)
+      const response = await initiateCall(session.id)
+      // Join the Agora channel
+      await joinAgoraChannel(
+        process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+        response.channel_name,
+        response.token,
+        user!.id
+      );
     } catch (error) {
       console.error('Failed to initiate call:', error)
       toast({
@@ -89,8 +176,16 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
   const handleAcceptCall = async () => {
     try {
-      await acceptCall(session.id)
+      const response = await acceptCall(session.id)
       setCallStatus('connected')
+      
+      // Join the Agora channel
+      await joinAgoraChannel(
+        process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+        response.channel_name,
+        response.token,
+        user!.id
+      );
     } catch (error) {
       console.error('Failed to accept call:', error)
       toast({
@@ -116,6 +211,7 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       await endCall(session.id)
       setCallStatus('idle')
       setShowCallDialog(false)
+      await leaveAgoraChannel();
     } catch (error) {
       console.error('Failed to end call:', error)
       toast({
