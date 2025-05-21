@@ -78,23 +78,39 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
     try {
       // Join the channel
       await client.join(appId, channel, token, uid);
+      console.log('Successfully joined channel:', channel);
 
       // Create and publish local audio track
       const audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
       await client.publish([audioTrack]);
       setLocalAudioTrack(audioTrack);
+      console.log('Local audio track published');
 
       // Set up event handlers
       client.on('user-published', async (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
+        console.log('Remote user published:', user.uid, mediaType);
         await client.subscribe(user, mediaType);
         if (mediaType === 'audio') {
-          // Play the remote audio
+          console.log('Playing remote audio track');
           user.audioTrack?.play();
         }
       });
 
       client.on('user-unpublished', (user: IAgoraRTCRemoteUser) => {
+        console.log('Remote user unpublished:', user.uid);
         client.unsubscribe(user);
+      });
+
+      client.on('connection-state-change', (curState: string, prevState: string) => {
+        console.log('Connection state changed:', prevState, 'to', curState);
+      });
+
+      // Enable audio volume indication
+      client.enableAudioVolumeIndicator();
+      client.on('volume-indication', (volumes: { uid: number; level: number }[]) => {
+        volumes.forEach((volume: { uid: number; level: number }) => {
+          console.log(`UID ${volume.uid} Level: ${volume.level}`);
+        });
       });
 
       return { client, audioTrack };
@@ -108,14 +124,21 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
   const leaveAgoraChannel = async () => {
     if (!isAgoraReady) return;
 
-    if (localAudioTrack) {
-      localAudioTrack.close();
-      setLocalAudioTrack(null);
-    }
+    try {
+      if (localAudioTrack) {
+        localAudioTrack.stop();
+        localAudioTrack.close();
+        setLocalAudioTrack(null);
+        console.log('Local audio track closed');
+      }
 
-    if (agoraClient) {
-      await agoraClient.leave();
-      setAgoraClient(null);
+      if (agoraClient) {
+        await agoraClient.leave();
+        setAgoraClient(null);
+        console.log('Left Agora channel');
+      }
+    } catch (error) {
+      console.error('Error leaving channel:', error);
     }
   };
 
