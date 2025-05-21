@@ -124,11 +124,21 @@ export function ReverendChatArea({
 
       // Set up event handlers
       client.on('user-published', async (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
+        console.log('Remote user published:', user.uid, mediaType);
         await client.subscribe(user, mediaType);
+        if (mediaType === 'audio') {
+          console.log('Playing remote audio track');
+          user.audioTrack?.play();
+        }
       });
 
       client.on('user-unpublished', (user: IAgoraRTCRemoteUser) => {
+        console.log('Remote user unpublished:', user.uid);
         client.unsubscribe(user);
+      });
+
+      client.on('connection-state-change', (curState: string, prevState: string) => {
+        console.log('Connection state changed:', prevState, 'to', curState);
       });
 
       return { client, audioTrack };

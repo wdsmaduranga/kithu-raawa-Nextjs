@@ -87,6 +87,10 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       // Set up event handlers
       client.on('user-published', async (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
         await client.subscribe(user, mediaType);
+        if (mediaType === 'audio') {
+          // Play the remote audio
+          user.audioTrack?.play();
+        }
       });
 
       client.on('user-unpublished', (user: IAgoraRTCRemoteUser) => {
