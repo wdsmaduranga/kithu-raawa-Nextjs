@@ -102,6 +102,66 @@ export function ReverendChatArea({
     return agoraClient;
   };
 
+  // Platform detection
+  const isMobileDevice = () => {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  };
+
+  // Device capabilities detection
+  const getDeviceCapabilities = () => {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isAndroid = /Android/.test(navigator.userAgent);
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    
+    return {
+      isIOS,
+      isAndroid,
+      isSafari,
+      isMobile: isMobileDevice(),
+    };
+  };
+
+  // Initialize audio context based on platform
+  const initializeAudioContext = async () => {
+    try {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+      return audioContext;
+    } catch (error) {
+      console.error('Failed to initialize audio context:', error);
+      return null;
+    }
+  };
+
+  // Get optimal audio settings based on device
+  const getAudioSettings = () => {
+    const { isIOS, isAndroid } = getDeviceCapabilities();
+    
+    // Base settings
+    const settings = {
+      encoderConfig: {
+        sampleRate: 48000,
+        stereo: true,
+        bitrate: 128,
+      },
+      AEC: true,  // Echo cancellation
+      ANS: true,  // Noise suppression
+      AGC: true,  // Automatic gain control
+    };
+
+    // Platform-specific adjustments
+    if (isIOS) {
+      settings.encoderConfig.sampleRate = 44100; // iOS often works better with 44.1kHz
+      settings.encoderConfig.bitrate = 96; // Lower bitrate for better performance
+    } else if (isAndroid) {
+      settings.encoderConfig.bitrate = 128; // Higher bitrate for Android
+    }
+
+    return settings;
+  };
+
   // Join Agora channel
   const joinAgoraChannel = async (appId: string, channel: string, token: string, uid: number) => {
     if (!isAgoraReady || !AgoraRTC) {
@@ -118,11 +178,13 @@ export function ReverendChatArea({
       await client.join(appId, channel, token, uid);
       console.log('Successfully joined channel:', channel);
 
-      // Create and publish local audio track
-      const audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+      // Create and publish local audio track with platform-specific settings
+      const audioSettings = getAudioSettings();
+      const audioTrack = await AgoraRTC.createMicrophoneAudioTrack(audioSettings);
+      
       await client.publish([audioTrack]);
       setLocalAudioTrack(audioTrack);
-      console.log('Local audio track published');
+      console.log('Local audio track published with settings:', audioSettings);
 
       // Set up event handlers
       client.on('user-published', async (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
@@ -130,7 +192,18 @@ export function ReverendChatArea({
         await client.subscribe(user, mediaType);
         if (mediaType === 'audio') {
           console.log('Playing remote audio track');
+          
+          // Initialize audio context for mobile devices
+          if (isMobileDevice()) {
+            await initializeAudioContext();
+          }
+          
+          // Set volume for remote audio
+          user.audioTrack?.setVolume(100);
           user.audioTrack?.play();
+
+          // Log audio level through the client's volume indication
+          console.log(`Remote user ${user.uid} connected`);
         }
       });
 
@@ -281,6 +354,7 @@ export function ReverendChatArea({
     }
   }
 
+  // Handle call acceptance with platform-specific audio handling
   const handleAcceptCall = async () => {
     if (!isAgoraReady) {
       toast({
@@ -292,11 +366,16 @@ export function ReverendChatArea({
     }
 
     try {
+      const deviceCapabilities = getDeviceCapabilities();
+      
+      // Initialize audio context for mobile devices
+      if (deviceCapabilities.isMobile) {
+        await initializeAudioContext();
+      }
+
       const response = await acceptCall(session.id)
       setCallStatus('connected')
-      console.log(response.channel_name);
-      console.log(response.token);
-      console.log(response.u_id);
+      
       // Join the Agora channel
       await joinAgoraChannel(
         process.env.NEXT_PUBLIC_AGORA_APP_ID!,
@@ -304,6 +383,20 @@ export function ReverendChatArea({
         response.token,
         response.u_id
       );
+
+      // Show platform-specific instructions
+      if (deviceCapabilities.isMobile) {
+        let instructions = "Make sure your device's media volume is turned up";
+        
+        if (deviceCapabilities.isIOS) {
+          instructions += " and not in silent mode";
+        }
+        
+        toast({
+          title: "Call Connected",
+          description: instructions,
+        });
+      }
     } catch (error) {
       console.error('Failed to accept call:', error)
       toast({
