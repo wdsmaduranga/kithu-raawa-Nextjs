@@ -173,14 +173,16 @@ export function ReverendChatArea({
     channel.bind('call.answered', async (data: any) => {
       if (data.session?.id === session.id) {
         setCallStatus('connected');
-        console.log(data);
+        console.log(data.channel_name);
+        console.log(data.token);
+        console.log(data.u_id);
         try {
           // Join the Agora channel
           await joinAgoraChannel(
             process.env.NEXT_PUBLIC_AGORA_APP_ID!,
             data.channel_name,
             data.token,
-            user?.id
+            data.u_id
           );
         } catch (error) {
           console.error('Failed to join Agora channel:', error);
@@ -267,13 +269,13 @@ export function ReverendChatArea({
       setCallStatus('connected')
       console.log(response.channel_name);
       console.log(response.token);
-      console.log(user!.id);
+      console.log(response.u_id);
       // Join the Agora channel
       await joinAgoraChannel(
         process.env.NEXT_PUBLIC_AGORA_APP_ID!,
         response.channel_name,
         response.token,
-        user!.id
+        response.u_id
       );
     } catch (error) {
       console.error('Failed to accept call:', error)

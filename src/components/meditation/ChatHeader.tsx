@@ -139,14 +139,14 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
         setCallStatus('connected');
         console.log(data.channel_name);
         console.log(data.token);
-        console.log(user?.id);
+        console.log(data.u_id);
         try {
           // Join the Agora channel
           await joinAgoraChannel(
             process.env.NEXT_PUBLIC_AGORA_APP_ID!,
             data.channel_name,
             data.token,
-            user?.id
+            data.caller_id
           );
         } catch (error) {
           console.error('Failed to join Agora channel:', error);
