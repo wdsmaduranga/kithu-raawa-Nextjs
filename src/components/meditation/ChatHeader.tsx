@@ -107,7 +107,9 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       console.log("call.ended", data);
       if (data.session?.id === session.id) {
         console.log("Handling ended call for session:", session.id);
-        await handleEndCall();
+        await cleanupAudioTracks();
+        setCallStatus('idle');
+        setShowCallDialog(false);
       }
     });
 
