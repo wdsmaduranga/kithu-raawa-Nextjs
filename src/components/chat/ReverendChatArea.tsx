@@ -22,13 +22,6 @@ import { useUserStore } from "@/stores/userStore"
 import { initiateCall, acceptCall, rejectCall, endCall } from "@/lib/api"
 import Pusher from "pusher-js"
 
-// Import Agora types only
-import type { 
-  IAgoraRTCClient, 
-  IAgoraRTCRemoteUser, 
-  IMicrophoneAudioTrack 
-} from 'agora-rtc-sdk-ng';
-
 interface ReverendChatAreaProps {
   session: ChatSession
   messages: Message[]
@@ -67,281 +60,64 @@ export function ReverendChatArea({
   const [showCallDialog, setShowCallDialog] = useState(false)
   const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'incoming' | 'connected'>('idle')
   const [incomingCallData, setIncomingCallData] = useState<any>(null)
-  const [agoraClient, setAgoraClient] = useState<IAgoraRTCClient | null>(null)
-  const [localAudioTrack, setLocalAudioTrack] = useState<IMicrophoneAudioTrack | null>(null)
-  const [isAgoraReady, setIsAgoraReady] = useState(false)
-  const [AgoraRTC, setAgoraRTC] = useState<any>(null)
-
-  // Initialize Agora on client side
-  useEffect(() => {
-    const initAgora = async () => {
-      try {
-        // This will only run on client side
-        if (typeof window !== 'undefined') {
-          const Agora = await import('agora-rtc-sdk-ng');
-          setAgoraRTC(Agora);
-          setIsAgoraReady(true);
-        }
-      } catch (error) {
-        console.error('Failed to initialize Agora:', error);
-      }
-    };
-
-    initAgora();
-  }, []);
-
-  // Initialize Agora client
-  const initializeAgoraClient = async () => {
-    if (!isAgoraReady || !AgoraRTC) return null;
-    
-    if (!agoraClient) {
-      const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
-      setAgoraClient(client);
-      return client;
-    }
-    return agoraClient;
-  };
-
-  // Platform detection
-  const isMobileDevice = () => {
-    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-  };
-
-  // Device capabilities detection
-  const getDeviceCapabilities = () => {
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-    const isAndroid = /Android/.test(navigator.userAgent);
-    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-    
-    return {
-      isIOS,
-      isAndroid,
-      isSafari,
-      isMobile: isMobileDevice(),
-    };
-  };
-
-  // Initialize audio context based on platform
-  const initializeAudioContext = async () => {
-    try {
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume();
-      }
-      return audioContext;
-    } catch (error) {
-      console.error('Failed to initialize audio context:', error);
-      return null;
-    }
-  };
-
-  // Get optimal audio settings based on device
-  const getAudioSettings = () => {
-    const { isIOS, isAndroid } = getDeviceCapabilities();
-    
-    // Base settings
-    const settings = {
-      encoderConfig: {
-        sampleRate: 48000,
-        stereo: true,
-        bitrate: 128,
-      },
-      AEC: true,  // Echo cancellation
-      ANS: true,  // Noise suppression
-      AGC: true,  // Automatic gain control
-    };
-
-    // Platform-specific adjustments
-    if (isIOS) {
-      settings.encoderConfig.sampleRate = 44100; // iOS often works better with 44.1kHz
-      settings.encoderConfig.bitrate = 96; // Lower bitrate for better performance
-    } else if (isAndroid) {
-      settings.encoderConfig.bitrate = 128; // Higher bitrate for Android
-    }
-
-    return settings;
-  };
-
-  // Join Agora channel
-  const joinAgoraChannel = async (appId: string, channel: string, token: string, uid: number) => {
-    if (!isAgoraReady || !AgoraRTC) {
-      throw new Error('Agora is not ready');
-    }
-
-    const client = await initializeAgoraClient();
-    if (!client) {
-      throw new Error('Failed to initialize Agora client');
-    }
-
-    try {
-      // Join the channel
-      await client.join(appId, channel, token, uid);
-      console.log('Successfully joined channel:', channel);
-
-      // Create and publish local audio track with platform-specific settings
-      const audioSettings = getAudioSettings();
-      const audioTrack = await AgoraRTC.createMicrophoneAudioTrack(audioSettings);
-      
-      await client.publish([audioTrack]);
-      setLocalAudioTrack(audioTrack);
-      console.log('Local audio track published with settings:', audioSettings);
-
-      // Set up event handlers
-      client.on('user-published', async (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
-        console.log('Remote user published:', user.uid, mediaType);
-        await client.subscribe(user, mediaType);
-        if (mediaType === 'audio') {
-          console.log('Playing remote audio track');
-          
-          // Initialize audio context for mobile devices
-          if (isMobileDevice()) {
-            await initializeAudioContext();
-          }
-          
-          // Set volume for remote audio
-          user.audioTrack?.setVolume(100);
-          user.audioTrack?.play();
-
-          // Log audio level through the client's volume indication
-          console.log(`Remote user ${user.uid} connected`);
-        }
-      });
-
-      client.on('user-unpublished', (user: IAgoraRTCRemoteUser) => {
-        console.log('Remote user unpublished:', user.uid);
-        client.unsubscribe(user);
-      });
-
-      client.on('connection-state-change', (curState: string, prevState: string) => {
-        console.log('Connection state changed:', prevState, 'to', curState);
-      });
-
-      // Enable audio volume indication
-      client.enableAudioVolumeIndicator();
-      client.on('volume-indication', (volumes: { uid: number; level: number }[]) => {
-        volumes.forEach((volume: { uid: number; level: number }) => {
-          console.log(`UID ${volume.uid} Level: ${volume.level}`);
-        });
-      });
-
-      return { client, audioTrack };
-    } catch (error) {
-      console.error('Error joining channel:', error);
-      throw error;
-    }
-  };
-
-  // Leave Agora channel
-  const leaveAgoraChannel = async () => {
-    if (!isAgoraReady) return;
-
-    try {
-      if (localAudioTrack) {
-        localAudioTrack.stop();
-        localAudioTrack.close();
-        setLocalAudioTrack(null);
-        console.log('Local audio track closed');
-      }
-
-      if (agoraClient) {
-        await agoraClient.leave();
-        setAgoraClient(null);
-        console.log('Left Agora channel');
-      }
-    } catch (error) {
-      console.error('Error leaving channel:', error);
-    }
-  };
 
   useEffect(() => {
-    if (!user || !isAgoraReady) return;
+    if (!user) return;
 
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
     })
 
+    // Subscribe to the user's channel
     const channel = pusher.subscribe(`user.${user.id}`)
 
     // Listen for incoming calls
-    channel.bind('call.incoming', async (data: any) => {
-      setIncomingCallData(data);
-      setCallStatus('incoming');
-      setShowCallDialog(true);
+    channel.bind('call.incoming', (data: any) => {
+      setIncomingCallData(data)
+      setCallStatus('incoming')
+      setShowCallDialog(true)
     })
 
     // Listen for call status updates
-    channel.bind('call.answered', async (data: any) => {
+    channel.bind('call.answered', (data: any) => {
       if (data.session?.id === session.id) {
-        setCallStatus('connected');
-        console.log(data.channel_name);
-        console.log(data.token);
-        console.log(data.u_id);
-        try {
-          // Join the Agora channel
-          await joinAgoraChannel(
-            process.env.NEXT_PUBLIC_AGORA_APP_ID!,
-            data.channel_name,
-            data.token,
-            data.u_id
-          );
-        } catch (error) {
-          console.error('Failed to join Agora channel:', error);
-          toast({
-            variant: "destructive",
-            title: "Call Error",
-            description: "Failed to establish voice connection",
-          });
-        }
+        setCallStatus('connected')
       }
     })
 
-    channel.bind('call.rejected', () => {
-      setCallStatus('idle')
-      setShowCallDialog(false)
-      toast({
-        title: "Call Rejected",
-        description: "The other party rejected the call",
-      })
+    channel.bind('call.rejected', (data: any) => {
+      if (data.session?.id === session.id) {
+        setCallStatus('idle')
+        setShowCallDialog(false)
+        toast({
+          title: "Call Rejected",
+          description: "The other party rejected the call",
+        })
+      }
     })
 
-    channel.bind('call.ended', async () => {
-      setCallStatus('idle')
-      setShowCallDialog(false)
-      await leaveAgoraChannel();
-      toast({
-        title: "Call Ended",
-        description: "The call has ended",
-      })
+    channel.bind('call.ended', (data: any) => {
+      if (data.session?.id === session.id) {
+        setCallStatus('idle')
+        setShowCallDialog(false)
+        toast({
+          title: "Call Ended",
+          description: "The call has ended",
+        })
+      }
     })
 
     return () => {
       channel.unbind_all()
       pusher.unsubscribe(`user.${user.id}`)
-      leaveAgoraChannel();
     }
-  }, [user?.id, session.id, isAgoraReady])
+  }, [user?.id, session.id])
 
   const handleInitiateCall = async () => {
-    if (!isAgoraReady) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Voice call is not ready. Please try again.",
-      });
-      return;
-    }
-
     try {
       setCallStatus('calling')
       setShowCallDialog(true)
-      const response = await initiateCall(session.id)
-      // Join the Agora channel
-      // await joinAgoraChannel(
-      //   process.env.NEXT_PUBLIC_AGORA_APP_ID!,
-      //   response.channel_name,
-      //   response.token,
-      //   user!.id
-      // );
+      await initiateCall(session.id)
     } catch (error) {
       console.error('Failed to initiate call:', error)
       toast({
@@ -354,49 +130,10 @@ export function ReverendChatArea({
     }
   }
 
-  // Handle call acceptance with platform-specific audio handling
   const handleAcceptCall = async () => {
-    if (!isAgoraReady) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Voice call is not ready. Please try again.",
-      });
-      return;
-    }
-
     try {
-      const deviceCapabilities = getDeviceCapabilities();
-      
-      // Initialize audio context for mobile devices
-      if (deviceCapabilities.isMobile) {
-        await initializeAudioContext();
-      }
-
-      const response = await acceptCall(session.id)
+      await acceptCall(session.id)
       setCallStatus('connected')
-      
-      // Join the Agora channel
-      await joinAgoraChannel(
-        process.env.NEXT_PUBLIC_AGORA_APP_ID!,
-        response.channel_name,
-        response.token,
-        response.u_id
-      );
-
-      // Show platform-specific instructions
-      if (deviceCapabilities.isMobile) {
-        let instructions = "Make sure your device's media volume is turned up";
-        
-        if (deviceCapabilities.isIOS) {
-          instructions += " and not in silent mode";
-        }
-        
-        toast({
-          title: "Call Connected",
-          description: instructions,
-        });
-      }
     } catch (error) {
       console.error('Failed to accept call:', error)
       toast({
@@ -422,7 +159,6 @@ export function ReverendChatArea({
       await endCall(session.id)
       setCallStatus('idle')
       setShowCallDialog(false)
-      await leaveAgoraChannel();
     } catch (error) {
       console.error('Failed to end call:', error)
       toast({
@@ -533,15 +269,6 @@ export function ReverendChatArea({
               onKeyDown={handleKeyPress}
           />
           <div className="absolute bottom-2 right-2 flex items-center space-x-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 rounded-full"
-              onClick={handleInitiateCall}
-              disabled={callStatus !== 'idle'}
-            >
-              <Phone className="h-4 w-4" />
-            </Button>
             <Dialog open={showQuickResponses} onOpenChange={setShowQuickResponses}>
               <DialogContent className="sm:max-w-[525px]">
                 <DialogHeader>
