@@ -2,11 +2,11 @@ import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { ArrowLeft, Phone, Video, Info, MoreVertical } from "lucide-react"
+import { ArrowLeft, Phone, Video, Info, MoreVertical, Volume2, PhoneOff } from "lucide-react"
 import { ChatSession, Message } from "@/lib/types"
 import { useState, useEffect, useRef } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { initiateCall, acceptCall, rejectCall, endCall, getCallToken } from "@/lib/api"
+import { initiateCall, acceptCall, rejectCall, endCall } from "@/lib/api"
 import { useToast } from "@/hooks/use-toast"
 import Pusher from "pusher-js"
 import { useUserStore } from "@/stores/userStore"
@@ -24,6 +24,10 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
   const [showCallDialog, setShowCallDialog] = useState(false)
   const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'incoming' | 'connected'>('idle')
   const [incomingCallData, setIncomingCallData] = useState<any>(null)
+  const [isMuted, setIsMuted] = useState(false)
+  const [isSpeakerOn, setIsSpeakerOn] = useState(true)
+  const [callDuration, setCallDuration] = useState(0)
+  const callTimerRef = useRef<NodeJS.Timeout | null>(null)
   const { user } = useUserStore()
   const zegoEngine = useRef<ZegoExpressEngine | null>(null)
   const localStream = useRef<MediaStream | null>(null)
@@ -37,18 +41,15 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
     const channel = pusher.subscribe(`user.${user.id}`)
 
-    // Listen for incoming calls
     channel.bind('call.incoming', (data: any) => {
       setIncomingCallData(data)
       setCallStatus('incoming')
       setShowCallDialog(true)
     })
 
-    // Listen for call status updates
     channel.bind('call.answered', async (data: any) => {
       if (data.session?.id === session.id) {
         setCallStatus('connected')
-        // Initialize ZEGOCLOUD engine and join room
         await initializeZegoEngine(data.zego_data)
       }
     })
@@ -85,13 +86,11 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
   const initializeZegoEngine = async (zegoData: any) => {
     try {
-      // Initialize ZEGOCLOUD engine
       zegoEngine.current = new ZegoExpressEngine(
         parseInt(process.env.NEXT_PUBLIC_ZEGO_APP_ID || '0'),
         process.env.NEXT_PUBLIC_ZEGO_SERVER_SECRET || ''
       )
 
-      // Login to ZEGOCLOUD
       await zegoEngine.current.loginRoom(
         zegoData.channel_name,
         zegoData.token_data.token,
@@ -99,22 +98,38 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
         { userUpdate: true }
       )
 
-      // Start local audio stream
       localStream.current = await zegoEngine.current.createStream({
         camera: { audio: true, video: false }
       })
 
-      // Publish stream
       await (zegoEngine.current as any).startPublishing(localStream.current)
 
+      // Start call timer
+      startCallTimer()
+
       // Listen for remote streams
-      zegoEngine.current.on('publisherStateUpdate', (result) => {
+      zegoEngine.current.on('publisherStateUpdate', (result: any) => {
         console.log('Publisher state update:', result)
       })
 
-      zegoEngine.current.on('playerStateUpdate', (result) => {
+      zegoEngine.current.on('playerStateUpdate', (result: any) => {
         console.log('Player state update:', result)
       })
+
+      // Listen for remote user joining
+      zegoEngine.current.on('roomUserUpdate', (roomID: string, updateType: 'ADD' | 'DELETE', userList: any[]) => {
+        console.log('Room user update:', roomID, updateType, userList)
+        if (updateType === 'ADD') {
+          // Handle remote user joining
+          userList.forEach(user => {
+            if (user.userID !== user?.id.toString()) {
+              // Start playing remote stream
+              zegoEngine.current?.startPlayingStream(user.streamID)
+            }
+          })
+        }
+      })
+
     } catch (error) {
       console.error('Failed to initialize ZEGOCLOUD:', error)
       toast({
@@ -122,6 +137,38 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
         title: "Error",
         description: "Failed to initialize voice call. Please try again.",
       })
+    }
+  }
+
+  const startCallTimer = () => {
+    setCallDuration(0)
+    callTimerRef.current = setInterval(() => {
+      setCallDuration(prev => prev + 1)
+    }, 1000)
+  }
+
+  const stopCallTimer = () => {
+    if (callTimerRef.current) {
+      clearInterval(callTimerRef.current)
+      callTimerRef.current = null
+    }
+    setCallDuration(0)
+  }
+
+  const toggleMute = () => {
+    if (localStream.current) {
+      const audioTrack = localStream.current.getAudioTracks()[0]
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled
+        setIsMuted(!isMuted)
+      }
+    }
+  }
+
+  const toggleSpeaker = () => {
+    if (zegoEngine.current) {
+      (zegoEngine.current as any).setAudioOutputDevice(isSpeakerOn ? 'earpiece' : 'speaker')
+      setIsSpeakerOn(!isSpeakerOn)
     }
   }
 
@@ -134,6 +181,7 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       zegoEngine.current.destroyEngine()
       zegoEngine.current = null
     }
+    stopCallTimer()
   }
 
   const handleInitiateCall = async () => {
@@ -141,7 +189,6 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       setCallStatus('calling')
       setShowCallDialog(true)
       const response = await initiateCall(session.id)
-      // Initialize ZEGOCLOUD engine and join room
       await initializeZegoEngine(response)
     } catch (error) {
       console.error('Failed to initiate call:', error)
@@ -159,7 +206,6 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
     try {
       const response = await acceptCall(session.id)
       setCallStatus('connected')
-      // Initialize ZEGOCLOUD engine and join room
       await initializeZegoEngine(response)
     } catch (error) {
       console.error('Failed to accept call:', error)
@@ -329,6 +375,12 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
             
             <h3 className="text-lg font-semibold">{senderName}</h3>
             
+            {callStatus === 'connected' && (
+              <div className="text-sm text-muted-foreground">
+                {Math.floor(callDuration / 60)}:{(callDuration % 60).toString().padStart(2, '0')}
+              </div>
+            )}
+            
             <div className="flex gap-4">
               {callStatus === 'incoming' && (
                 <>
@@ -341,7 +393,31 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
                 </>
               )}
               
-              {(callStatus === 'calling' || callStatus === 'connected') && (
+              {callStatus === 'connected' && (
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className={`h-10 w-10 rounded-full ${isMuted ? 'bg-red-100' : ''}`}
+                    onClick={toggleMute}
+                  >
+                    <Phone className="h-5 w-5" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className={`h-10 w-10 rounded-full ${!isSpeakerOn ? 'bg-red-100' : ''}`}
+                    onClick={toggleSpeaker}
+                  >
+                    <Volume2 className="h-5 w-5" />
+                  </Button>
+                  <Button onClick={handleEndCall} variant="destructive" className="h-10 w-10 rounded-full">
+                    <PhoneOff className="h-5 w-5" />
+                  </Button>
+                </div>
+              )}
+              
+              {(callStatus === 'calling') && (
                 <Button onClick={handleEndCall} variant="destructive">
                   End Call
                 </Button>

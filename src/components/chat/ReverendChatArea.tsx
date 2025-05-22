@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { format } from "date-fns"
-import { Send, Paperclip, Smile, FileText, Phone } from "lucide-react"
+import { Send, Paperclip, Smile, FileText, Phone, Volume2, PhoneOff } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -63,6 +63,10 @@ export function ReverendChatArea({
   const [incomingCallData, setIncomingCallData] = useState<any>(null)
   const zegoEngine = useRef<ZegoExpressEngine | null>(null)
   const localStream = useRef<MediaStream | null>(null)
+  const [isMuted, setIsMuted] = useState(false)
+  const [isSpeakerOn, setIsSpeakerOn] = useState(true)
+  const [callDuration, setCallDuration] = useState(0)
+  const callTimerRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     if (!user) return;
@@ -136,6 +140,10 @@ export function ReverendChatArea({
 
       await (zegoEngine.current as any).startPublishing(localStream.current)
 
+      // Start call timer
+      startCallTimer()
+
+      // Listen for remote streams
       zegoEngine.current.on('publisherStateUpdate', (result: any) => {
         console.log('Publisher state update:', result)
       })
@@ -143,6 +151,21 @@ export function ReverendChatArea({
       zegoEngine.current.on('playerStateUpdate', (result: any) => {
         console.log('Player state update:', result)
       })
+
+      // Listen for remote user joining
+      zegoEngine.current.on('roomUserUpdate', (roomID: string, updateType: 'ADD' | 'DELETE', userList: any[]) => {
+        console.log('Room user update:', roomID, updateType, userList)
+        if (updateType === 'ADD') {
+          // Handle remote user joining
+          userList.forEach(user => {
+            if (user.userID !== user?.id.toString()) {
+              // Start playing remote stream
+              zegoEngine.current?.startPlayingStream(user.streamID)
+            }
+          })
+        }
+      })
+
     } catch (error) {
       console.error('Failed to initialize ZEGOCLOUD:', error)
       toast({
@@ -150,6 +173,38 @@ export function ReverendChatArea({
         title: "Error",
         description: "Failed to initialize voice call. Please try again.",
       })
+    }
+  }
+
+  const startCallTimer = () => {
+    setCallDuration(0)
+    callTimerRef.current = setInterval(() => {
+      setCallDuration(prev => prev + 1)
+    }, 1000)
+  }
+
+  const stopCallTimer = () => {
+    if (callTimerRef.current) {
+      clearInterval(callTimerRef.current)
+      callTimerRef.current = null
+    }
+    setCallDuration(0)
+  }
+
+  const toggleMute = () => {
+    if (localStream.current) {
+      const audioTrack = localStream.current.getAudioTracks()[0]
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled
+        setIsMuted(!isMuted)
+      }
+    }
+  }
+
+  const toggleSpeaker = () => {
+    if (zegoEngine.current) {
+      (zegoEngine.current as any).setAudioOutputDevice(isSpeakerOn ? 'earpiece' : 'speaker')
+      setIsSpeakerOn(!isSpeakerOn)
     }
   }
 
@@ -162,6 +217,7 @@ export function ReverendChatArea({
       zegoEngine.current.destroyEngine()
       zegoEngine.current = null
     }
+    stopCallTimer()
   }
 
   const handleInitiateCall = async () => {
@@ -361,6 +417,15 @@ export function ReverendChatArea({
                   </Tabs>
                 </DialogContent>
               </Dialog>
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                className="h-8 w-8 rounded-full"
+                onClick={handleInitiateCall}
+                disabled={session.status !== 'active'}
+              >
+                <Phone className="h-4 w-4" />
+              </Button>
               <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
                 <Paperclip className="h-4 w-4" />
               </Button>
@@ -404,6 +469,12 @@ export function ReverendChatArea({
             
             <h3 className="text-lg font-semibold">{session.user?.first_name || 'Anonymous'}</h3>
             
+            {callStatus === 'connected' && (
+              <div className="text-sm text-muted-foreground">
+                {Math.floor(callDuration / 60)}:{(callDuration % 60).toString().padStart(2, '0')}
+              </div>
+            )}
+            
             <div className="flex gap-4">
               {callStatus === 'incoming' && (
                 <>
@@ -416,7 +487,31 @@ export function ReverendChatArea({
                 </>
               )}
               
-              {(callStatus === 'calling' || callStatus === 'connected') && (
+              {callStatus === 'connected' && (
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className={`h-10 w-10 rounded-full ${isMuted ? 'bg-red-100' : ''}`}
+                    onClick={toggleMute}
+                  >
+                    <Phone className="h-5 w-5" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className={`h-10 w-10 rounded-full ${!isSpeakerOn ? 'bg-red-100' : ''}`}
+                    onClick={toggleSpeaker}
+                  >
+                    <Volume2 className="h-5 w-5" />
+                  </Button>
+                  <Button onClick={handleEndCall} variant="destructive" className="h-10 w-10 rounded-full">
+                    <PhoneOff className="h-5 w-5" />
+                  </Button>
+                </div>
+              )}
+              
+              {(callStatus === 'calling') && (
                 <Button onClick={handleEndCall} variant="destructive">
                   End Call
                 </Button>
