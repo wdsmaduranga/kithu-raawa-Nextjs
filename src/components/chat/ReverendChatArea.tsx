@@ -182,7 +182,18 @@ export function ReverendChatArea({
         // First update UI state
         setCallStatus('idle');
         setShowCallDialog(false);
-        
+              // Clean up any existing audio tracks before rejecting
+      if (localAudioTrack) {
+        localAudioTrack.close();
+        setLocalAudioTrack(null);
+      }
+      if (remoteAudioTrack) {
+        remoteAudioTrack.close();
+        setRemoteAudioTrack(null);
+      }
+      if (agoraEngine) {
+        await agoraEngine.leave();
+      }
         // Then cleanup audio tracks
         await cleanupAudioTracks();
 
@@ -288,7 +299,6 @@ export function ReverendChatArea({
 
   const handleRejectCall = async () => {
     if (typeof window === 'undefined') return;
-
     try {
       setCallStatus('idle');
       setShowCallDialog(false);
@@ -305,9 +315,7 @@ export function ReverendChatArea({
       if (agoraEngine) {
         await agoraEngine.leave();
       }
-
       await rejectCall(session.id);
-
       toast({
         title: "Call Rejected",
         description: "You have rejected the call",
