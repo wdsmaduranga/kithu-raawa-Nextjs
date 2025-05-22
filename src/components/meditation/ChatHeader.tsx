@@ -81,24 +81,46 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       }
     });
 
-    channel.bind('call.rejected', () => {
-      setCallStatus('idle');
-      setShowCallDialog(false);
-      toast({
-        title: "Call Rejected",
-        description: "The other party rejected the call",
-      });
+    channel.bind('call.rejected', async (data: any) => {
+      console.log("call.rejected event received", data.session?.id);
+      
+      if (data.session?.id === session.id) {
+        console.log("Handling rejected call for session:", session.id);
+        
+        // First update UI state
+        setCallStatus('idle');
+        setShowCallDialog(false);
+        
+        // Then cleanup audio tracks
+        await cleanupAudioTracks();
+
+        if (callStatus === 'calling') {
+          toast({
+            title: "Call Rejected",
+            description: "The other party rejected the call",
+          });
+        }
+      }
     });
 
-    channel.bind('call.ended', () => {
-      handleEndCall();
+    channel.bind('call.ended', async (data: any) => {
+      console.log("call.ended", data);
+      if (data.session?.id === session.id) {
+        console.log("Handling ended call for session:", session.id);
+        await handleEndCall();
+      }
     });
 
+    // Cleanup on unmount
     return () => {
+      console.log("Component unmounting - cleaning up resources");
+      cleanupAudioTracks().catch(e => {
+        console.error("Cleanup error on unmount:", e);
+      });
       channel.unbind_all();
       pusher.unsubscribe(`user.${user.id}`);
     };
-  }, [user?.id]);
+  }, [user?.id, session.id, callStatus]);
 
   const joinCall = async (channelName: string, token: string, uid: number) => {
     if (typeof window === 'undefined' || !agoraEngine) return;
@@ -136,21 +158,38 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
     if (typeof window === 'undefined') return;
 
     try {
+      // Create audio track before initiating call
+      const localTrack = await AgoraRTC.createMicrophoneAudioTrack();
+      setLocalAudioTrack(localTrack);
       setCallStatus('calling');
       setShowCallDialog(true);
-      const response = await initiateCall(session.id);
-      if (response.channel_name && response.token) {
-        await joinCall(response.channel_name, response.token, user?.id!);
+
+      try {
+        const response = await initiateCall(session.id);
+        if (response.channel_name && response.token) {
+          await joinCall(response.channel_name, response.token, user?.id!);
+        }
+      } catch (error) {
+        // If call initiation fails, cleanup the audio track
+        console.error('Failed to initiate call:', error);
+        await cleanupAudioTracks();
+        setCallStatus('idle');
+        setShowCallDialog(false);
+        toast({
+          variant: "destructive",
+          title: "Call Failed",
+          description: "Failed to initiate call. Please try again.",
+        });
       }
     } catch (error) {
-      console.error('Failed to initiate call:', error);
-      toast({
-        variant: "destructive",
-        title: "Call Failed",
-        description: "Failed to initiate call. Please try again.",
-      });
+      console.error('Failed to create audio track:', error);
       setCallStatus('idle');
       setShowCallDialog(false);
+      toast({
+        variant: "destructive",
+        title: "Microphone Error",
+        description: "Failed to access microphone. Please check your permissions.",
+      });
     }
   };
 
@@ -173,36 +212,120 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
     }
   };
 
+  const cleanupAudioTracks = async () => {
+    try {
+      console.log("Cleaning up audio tracks...");
+      
+      // Clean up local audio track
+      if (localAudioTrack) {
+        console.log("Closing local audio track...");
+        try {
+          // Try to stop first
+          await localAudioTrack.stop();
+        } catch (e) {
+          console.log("Stop not available for local track, proceeding with close");
+        }
+        
+        try {
+          await localAudioTrack.close();
+        } catch (e) {
+          console.error("Error closing local track:", e);
+        }
+        setLocalAudioTrack(null);
+      }
+
+      // Clean up remote audio track
+      if (remoteAudioTrack) {
+        console.log("Closing remote audio track...");
+        try {
+          // Try to stop first
+          await remoteAudioTrack.stop();
+        } catch (e) {
+          console.log("Stop not available for remote track, proceeding with close");
+        }
+        
+        try {
+          await remoteAudioTrack.close();
+        } catch (e) {
+          console.error("Error closing remote track:", e);
+        }
+        setRemoteAudioTrack(null);
+      }
+
+      // Leave the Agora engine
+      if (agoraEngine) {
+        console.log("Leaving Agora engine...");
+        try {
+          await agoraEngine.leave();
+        } catch (e) {
+          console.error("Error leaving Agora engine:", e);
+        }
+      }
+
+      console.log("Audio cleanup completed");
+    } catch (error) {
+      console.error("Error during audio cleanup:", error);
+    }
+  };
+
   const handleRejectCall = async () => {
     if (typeof window === 'undefined') return;
 
+    console.log("Rejecting call...");
     try {
-      await rejectCall(session.id);
+      // First cleanup audio resources
+      await cleanupAudioTracks();
+      
+      // Then update UI state
       setCallStatus('idle');
       setShowCallDialog(false);
+      
+      // Finally make the API call
+      await rejectCall(session.id);
+
+      toast({
+        title: "Call Rejected",
+        description: "You have rejected the call",
+      });
     } catch (error) {
       console.error('Failed to reject call:', error);
+      // Ensure cleanup happens even if API call fails
+      await cleanupAudioTracks();
+      setCallStatus('idle');
+      setShowCallDialog(false);
+      
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to reject call. Please try again.",
+      });
     }
   };
 
   const handleEndCall = async () => {
     if (typeof window === 'undefined') return;
-
+    console.log("Ending call...");
     try {
-      await endCall(session.id);
-      if (localAudioTrack) {
-        localAudioTrack.close();
-      }
-      if (remoteAudioTrack) {
-        remoteAudioTrack.close();
-      }
-      if (agoraEngine) {
-        await agoraEngine.leave();
-      }
+      // First cleanup audio resources
+      await cleanupAudioTracks();
+      // Then update UI state
       setCallStatus('idle');
       setShowCallDialog(false);
+      
+      // Finally make the API call
+      await endCall(session.id);
+
+      toast({
+        title: "Call Ended",
+        description: "The call has been ended",
+      });
     } catch (error) {
       console.error('Failed to end call:', error);
+      // Ensure cleanup happens even if API call fails
+      await cleanupAudioTracks();
+      setCallStatus('idle');
+      setShowCallDialog(false);
+      
       toast({
         variant: "destructive",
         title: "Error",

@@ -93,6 +93,62 @@ export function ReverendChatArea({
     };
   }, []);
 
+  const cleanupAudioTracks = async () => {
+    try {
+      console.log("Cleaning up audio tracks...");
+      
+      // Clean up local audio track
+      if (localAudioTrack) {
+        console.log("Closing local audio track...");
+        try {
+          // Try to stop first
+          await localAudioTrack.stop();
+        } catch (e) {
+          console.log("Stop not available for local track, proceeding with close");
+        }
+        
+        try {
+          await localAudioTrack.close();
+        } catch (e) {
+          console.error("Error closing local track:", e);
+        }
+        setLocalAudioTrack(null);
+      }
+
+      // Clean up remote audio track
+      if (remoteAudioTrack) {
+        console.log("Closing remote audio track...");
+        try {
+          // Try to stop first
+          await remoteAudioTrack.stop();
+        } catch (e) {
+          console.log("Stop not available for remote track, proceeding with close");
+        }
+        
+        try {
+          await remoteAudioTrack.close();
+        } catch (e) {
+          console.error("Error closing remote track:", e);
+        }
+        setRemoteAudioTrack(null);
+      }
+
+      // Leave the Agora engine
+      if (agoraEngine) {
+        console.log("Leaving Agora engine...");
+        try {
+          await agoraEngine.leave();
+        } catch (e) {
+          console.error("Error leaving Agora engine:", e);
+        }
+      }
+
+      console.log("Audio cleanup completed");
+    } catch (error) {
+      console.error("Error during audio cleanup:", error);
+    }
+  };
+
   useEffect(() => {
     if (typeof window === 'undefined' || !user) return;
 
@@ -117,28 +173,42 @@ export function ReverendChatArea({
       }
     });
 
-    channel.bind('call.rejected', (data: any) => {
+    channel.bind('call.rejected', async (data: any) => {
+      console.log("call.rejected event received", data.session?.id);
+      
       if (data.session?.id === session.id) {
+        console.log("Handling rejected call for session:", session.id);
+        
+        // First update UI state
         setCallStatus('idle');
         setShowCallDialog(false);
-        toast({
-          title: "Call Rejected",
-          description: "The other party rejected the call",
-        });
+        
+        // Then cleanup audio tracks
+        await cleanupAudioTracks();
+
+        if (callStatus === 'calling') {
+          toast({
+            title: "Call Rejected",
+            description: "The other party rejected the call",
+          });
+        }
       }
     });
 
     channel.bind('call.ended', (data: any) => {
       if (data.session?.id === session.id) {
-        handleEndCall();
+        // handleEndCall();
       }
     });
 
     return () => {
+      cleanupAudioTracks().catch(e => {
+        console.error("Cleanup error on unmount:", e);
+      });
       channel.unbind_all();
       pusher.unsubscribe(`user.${user.id}`);
     };
-  }, [user?.id, session.id]);
+  }, [user?.id, session.id, callStatus]);
 
   const joinCall = async (channelName: string, token: string, uid: number) => {
     if (typeof window === 'undefined' || !agoraEngine) return;
@@ -217,11 +287,35 @@ export function ReverendChatArea({
     if (typeof window === 'undefined') return;
 
     try {
-      await rejectCall(session.id);
       setCallStatus('idle');
       setShowCallDialog(false);
+      
+      // Clean up any existing audio tracks before rejecting
+      if (localAudioTrack) {
+        localAudioTrack.close();
+        setLocalAudioTrack(null);
+      }
+      if (remoteAudioTrack) {
+        remoteAudioTrack.close();
+        setRemoteAudioTrack(null);
+      }
+      if (agoraEngine) {
+        await agoraEngine.leave();
+      }
+
+      await rejectCall(session.id);
+
+      toast({
+        title: "Call Rejected",
+        description: "You have rejected the call",
+      });
     } catch (error) {
       console.error('Failed to reject call:', error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to reject call. Please try again.",
+      });
     }
   };
 
@@ -229,18 +323,28 @@ export function ReverendChatArea({
     if (typeof window === 'undefined') return;
 
     try {
-      await endCall(session.id);
+      setCallStatus('idle');
+      setShowCallDialog(false);
+      
+      // Clean up audio tracks
       if (localAudioTrack) {
         localAudioTrack.close();
+        setLocalAudioTrack(null);
       }
       if (remoteAudioTrack) {
         remoteAudioTrack.close();
+        setRemoteAudioTrack(null);
       }
       if (agoraEngine) {
         await agoraEngine.leave();
       }
-      setCallStatus('idle');
-      setShowCallDialog(false);
+
+      await endCall(session.id);
+
+      toast({
+        title: "Call Ended",
+        description: "The call has been ended",
+      });
     } catch (error) {
       console.error('Failed to end call:', error);
       toast({
@@ -248,6 +352,10 @@ export function ReverendChatArea({
         title: "Error",
         description: "Failed to end call. Please try again.",
       });
+      
+      // Even if the API call fails, ensure we clean up the UI
+      setCallStatus('idle');
+      setShowCallDialog(false);
     }
   };
 
