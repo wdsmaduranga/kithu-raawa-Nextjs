@@ -4,12 +4,13 @@ import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ArrowLeft, Phone, Video, Info, MoreVertical } from "lucide-react"
 import { ChatSession, Message } from "@/lib/types"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { initiateCall, acceptCall, rejectCall, endCall } from "@/lib/api"
+import { initiateCall, acceptCall, rejectCall, endCall, getCallToken } from "@/lib/api"
 import { useToast } from "@/hooks/use-toast"
 import Pusher from "pusher-js"
 import { useUserStore } from "@/stores/userStore"
+import { ZegoExpressEngine } from 'zego-express-engine-webrtc'
 
 interface ChatHeaderProps {
   session: ChatSession;
@@ -24,6 +25,8 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
   const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'incoming' | 'connected'>('idle')
   const [incomingCallData, setIncomingCallData] = useState<any>(null)
   const { user } = useUserStore()
+  const zegoEngine = useRef<ZegoExpressEngine | null>(null)
+  const localStream = useRef<MediaStream | null>(null)
 
   useEffect(() => {
     if (!user) return;
@@ -42,39 +45,104 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
     })
 
     // Listen for call status updates
-    channel.bind('call.answered', () => {
-      setCallStatus('connected')
+    channel.bind('call.answered', async (data: any) => {
+      if (data.session?.id === session.id) {
+        setCallStatus('connected')
+        // Initialize ZEGOCLOUD engine and join room
+        await initializeZegoEngine(data.zego_data)
+      }
     })
 
-    channel.bind('call.rejected', () => {
-      setCallStatus('idle')
-      setShowCallDialog(false)
-      toast({
-        title: "Call Rejected",
-        description: "The other party rejected the call",
-      })
+    channel.bind('call.rejected', (data: any) => {
+      if (data.session?.id === session.id) {
+        setCallStatus('idle')
+        setShowCallDialog(false)
+        toast({
+          title: "Call Rejected",
+          description: "The other party rejected the call",
+        })
+      }
     })
 
-    channel.bind('call.ended', () => {
-      setCallStatus('idle')
-      setShowCallDialog(false)
-      toast({
-        title: "Call Ended",
-        description: "The call has ended",
-      })
+    channel.bind('call.ended', (data: any) => {
+      if (data.session?.id === session.id) {
+        setCallStatus('idle')
+        setShowCallDialog(false)
+        stopLocalStream()
+        toast({
+          title: "Call Ended",
+          description: "The call has ended",
+        })
+      }
     })
 
     return () => {
       channel.unbind_all()
-      pusher.unsubscribe(`user.${session.user_id}`)
+      pusher.unsubscribe(`user.${user.id}`)
+      stopLocalStream()
     }
-  }, [session.user_id])
+  }, [user?.id, session.id])
+
+  const initializeZegoEngine = async (zegoData: any) => {
+    try {
+      // Initialize ZEGOCLOUD engine
+      zegoEngine.current = new ZegoExpressEngine(
+        parseInt(process.env.NEXT_PUBLIC_ZEGO_APP_ID || '0'),
+        process.env.NEXT_PUBLIC_ZEGO_SERVER_SECRET || ''
+      )
+
+      // Login to ZEGOCLOUD
+      await zegoEngine.current.loginRoom(
+        zegoData.channel_name,
+        zegoData.token_data.token,
+        { userID: user?.id.toString() || '', userName: user?.first_name || '' },
+        { userUpdate: true }
+      )
+
+      // Start local audio stream
+      localStream.current = await zegoEngine.current.createStream({
+        camera: { audio: true, video: false }
+      })
+
+      // Publish stream
+      await (zegoEngine.current as any).startPublishing(localStream.current)
+
+      // Listen for remote streams
+      zegoEngine.current.on('publisherStateUpdate', (result) => {
+        console.log('Publisher state update:', result)
+      })
+
+      zegoEngine.current.on('playerStateUpdate', (result) => {
+        console.log('Player state update:', result)
+      })
+    } catch (error) {
+      console.error('Failed to initialize ZEGOCLOUD:', error)
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to initialize voice call. Please try again.",
+      })
+    }
+  }
+
+  const stopLocalStream = () => {
+    if (localStream.current) {
+      localStream.current.getTracks().forEach(track => track.stop())
+      localStream.current = null
+    }
+    if (zegoEngine.current) {
+      zegoEngine.current.destroyEngine()
+      zegoEngine.current = null
+    }
+  }
 
   const handleInitiateCall = async () => {
     try {
       setCallStatus('calling')
       setShowCallDialog(true)
-      await initiateCall(session.id)
+      const response = await initiateCall(session.id)
+      // Initialize ZEGOCLOUD engine and join room
+      await initializeZegoEngine(response)
     } catch (error) {
       console.error('Failed to initiate call:', error)
       toast({
@@ -89,8 +157,10 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
   const handleAcceptCall = async () => {
     try {
-      await acceptCall(session.id)
+      const response = await acceptCall(session.id)
       setCallStatus('connected')
+      // Initialize ZEGOCLOUD engine and join room
+      await initializeZegoEngine(response)
     } catch (error) {
       console.error('Failed to accept call:', error)
       toast({
@@ -116,6 +186,7 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       await endCall(session.id)
       setCallStatus('idle')
       setShowCallDialog(false)
+      stopLocalStream()
     } catch (error) {
       console.error('Failed to end call:', error)
       toast({
