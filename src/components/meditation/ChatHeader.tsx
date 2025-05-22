@@ -10,13 +10,27 @@ import { initiateCall, acceptCall, rejectCall, endCall } from "@/lib/api"
 import { useToast } from "@/hooks/use-toast"
 import Pusher from "pusher-js"
 import { useUserStore } from "@/stores/userStore"
-import { ZegoExpressEngine } from 'zego-express-engine-webrtc'
 
 interface ChatHeaderProps {
   session: ChatSession;
   latestMessage?: Message;
   onInfoClick: () => void;
   showBackButton?: boolean;
+}
+
+// Client-side only component wrapper
+const ClientOnly = ({ children }: { children: React.ReactNode }) => {
+  const [isClient, setIsClient] = useState(false)
+
+  useEffect(() => {
+    setIsClient(true)
+  }, [])
+
+  if (!isClient) {
+    return null
+  }
+
+  return <>{children}</>
 }
 
 export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton = false }: ChatHeaderProps) {
@@ -29,7 +43,7 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
   const [callDuration, setCallDuration] = useState(0)
   const callTimerRef = useRef<NodeJS.Timeout | null>(null)
   const { user } = useUserStore()
-  const zegoEngine = useRef<ZegoExpressEngine | null>(null)
+  const zegoEngine = useRef<any>(null)
   const localStream = useRef<MediaStream | null>(null)
 
   useEffect(() => {
@@ -86,6 +100,8 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
   const initializeZegoEngine = async (zegoData: any) => {
     try {
+      const { ZegoExpressEngine } = await import('zego-express-engine-webrtc')
+      
       zegoEngine.current = new ZegoExpressEngine(
         parseInt(process.env.NEXT_PUBLIC_ZEGO_APP_ID || '0'),
         process.env.NEXT_PUBLIC_ZEGO_SERVER_SECRET || ''
@@ -102,7 +118,7 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
         camera: { audio: true, video: false }
       })
 
-      await (zegoEngine.current as any).startPublishing(localStream.current)
+      await zegoEngine.current.startPublishing(localStream.current)
 
       // Start call timer
       startCallTimer()
@@ -260,7 +276,7 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
     ? `${latestMessage.receiver?.first_name} ${latestMessage.receiver?.last_name}`:'';
 
   return (
-    <>
+    <ClientOnly>
       <div className="p-4 border-b flex items-center justify-between bg-muted/30">
         <div className="flex items-center space-x-3">
           {showBackButton && (
@@ -426,6 +442,6 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
           </div>
         </DialogContent>
       </Dialog>
-    </>
+    </ClientOnly>
   );
 }

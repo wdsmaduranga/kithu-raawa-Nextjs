@@ -40,6 +40,21 @@ interface ReverendChatAreaProps {
   textareaRef: React.RefObject<HTMLTextAreaElement>
 }
 
+// Client-side only component wrapper
+const ClientOnly = ({ children }: { children: React.ReactNode }) => {
+  const [isClient, setIsClient] = useState(false)
+
+  useEffect(() => {
+    setIsClient(true)
+  }, [])
+
+  if (!isClient) {
+    return null
+  }
+
+  return <>{children}</>
+}
+
 export function ReverendChatArea({
   session,
   messages,
@@ -287,7 +302,7 @@ export function ReverendChatArea({
   }
 
   return (
-    <>
+    <ClientOnly>
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         <ScrollArea className="flex-1 p-4">
           <div className="space-y-4">
@@ -520,6 +535,6 @@ export function ReverendChatArea({
           </div>
         </DialogContent>
       </Dialog>
-    </>
+    </ClientOnly>
   )
 }
