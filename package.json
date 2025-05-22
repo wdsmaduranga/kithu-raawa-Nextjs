@@ -108,7 +108,6 @@
     "use-file-picker": "^2.1.2",
     "use-sound": "^5.0.0",
     "vaul": "^0.9.9",
-    "zego-express-engine-webrtc": "^3.9.0",
     "zod": "^3.24.1",
     "zustand": "^5.0.3"
   },

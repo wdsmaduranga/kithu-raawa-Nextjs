@@ -2,14 +2,23 @@ import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { ArrowLeft, Phone, Video, Info, MoreVertical, Volume2, PhoneOff } from "lucide-react"
+import { ArrowLeft, Phone, Video, Info, MoreVertical } from "lucide-react"
 import { ChatSession, Message } from "@/lib/types"
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { initiateCall, acceptCall, rejectCall, endCall } from "@/lib/api"
 import { useToast } from "@/hooks/use-toast"
-import Pusher from "pusher-js"
 import { useUserStore } from "@/stores/userStore"
+
+// We'll import these dynamically in useEffect
+let Pusher: any;
+let AgoraRTC: any;
+
+if (typeof window !== 'undefined') {
+  // Only import on client side
+  Pusher = require('pusher-js');
+  AgoraRTC = require('agora-rtc-sdk-ng');
+}
 
 interface ChatHeaderProps {
   session: ChatSession;
@@ -18,246 +27,189 @@ interface ChatHeaderProps {
   showBackButton?: boolean;
 }
 
-// Client-side only component wrapper
-const ClientOnly = ({ children }: { children: React.ReactNode }) => {
-  const [isClient, setIsClient] = useState(false)
-
-  useEffect(() => {
-    setIsClient(true)
-  }, [])
-
-  if (!isClient) {
-    return null
-  }
-
-  return <>{children}</>
-}
-
 export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton = false }: ChatHeaderProps) {
   const { toast } = useToast()
   const [showCallDialog, setShowCallDialog] = useState(false)
   const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'incoming' | 'connected'>('idle')
   const [incomingCallData, setIncomingCallData] = useState<any>(null)
-  const [isMuted, setIsMuted] = useState(false)
-  const [isSpeakerOn, setIsSpeakerOn] = useState(true)
-  const [callDuration, setCallDuration] = useState(0)
-  const callTimerRef = useRef<NodeJS.Timeout | null>(null)
   const { user } = useUserStore()
-  const zegoEngine = useRef<any>(null)
-  const localStream = useRef<MediaStream | null>(null)
+  const [agoraEngine, setAgoraEngine] = useState<any>(null)
+  const [localAudioTrack, setLocalAudioTrack] = useState<any>(null)
+  const [remoteAudioTrack, setRemoteAudioTrack] = useState<any>(null)
+
+  // Initialize Agora client
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+    setAgoraEngine(client);
+
+    return () => {
+      if (localAudioTrack) {
+        localAudioTrack.close();
+      }
+      if (remoteAudioTrack) {
+        remoteAudioTrack.close();
+      }
+      if (client) {
+        client.leave();
+      }
+    };
+  }, []);
 
   useEffect(() => {
-    if (!user) return;
+    if (typeof window === 'undefined' || !user) return;
 
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
-    })
+    });
 
-    const channel = pusher.subscribe(`user.${user.id}`)
+    const channel = pusher.subscribe(`user.${user.id}`);
 
     channel.bind('call.incoming', (data: any) => {
-      setIncomingCallData(data)
-      setCallStatus('incoming')
-      setShowCallDialog(true)
-    })
+      setIncomingCallData(data);
+      setCallStatus('incoming');
+      setShowCallDialog(true);
+    });
 
     channel.bind('call.answered', async (data: any) => {
       if (data.session?.id === session.id) {
-        setCallStatus('connected')
-        await initializeZegoEngine(data.zego_data)
+        setCallStatus('connected');
+        if (data.agora) {
+          await joinCall(data.agora.channel_name, data.agora.token, data.agora.u_id);
+        }
       }
-    })
+    });
 
-    channel.bind('call.rejected', (data: any) => {
-      if (data.session?.id === session.id) {
-        setCallStatus('idle')
-        setShowCallDialog(false)
-        toast({
-          title: "Call Rejected",
-          description: "The other party rejected the call",
-        })
-      }
-    })
+    channel.bind('call.rejected', () => {
+      setCallStatus('idle');
+      setShowCallDialog(false);
+      toast({
+        title: "Call Rejected",
+        description: "The other party rejected the call",
+      });
+    });
 
-    channel.bind('call.ended', (data: any) => {
-      if (data.session?.id === session.id) {
-        setCallStatus('idle')
-        setShowCallDialog(false)
-        stopLocalStream()
-        toast({
-          title: "Call Ended",
-          description: "The call has ended",
-        })
-      }
-    })
+    channel.bind('call.ended', () => {
+      handleEndCall();
+    });
 
     return () => {
-      channel.unbind_all()
-      pusher.unsubscribe(`user.${user.id}`)
-      stopLocalStream()
-    }
-  }, [user?.id, session.id])
+      channel.unbind_all();
+      pusher.unsubscribe(`user.${user.id}`);
+    };
+  }, [user?.id]);
 
-  const initializeZegoEngine = async (zegoData: any) => {
+  const joinCall = async (channelName: string, token: string, uid: number) => {
+    if (typeof window === 'undefined' || !agoraEngine) return;
+
     try {
-      const { ZegoExpressEngine } = await import('zego-express-engine-webrtc')
-      
-      zegoEngine.current = new ZegoExpressEngine(
-        parseInt(process.env.NEXT_PUBLIC_ZEGO_APP_ID || '0'),
-        process.env.NEXT_PUBLIC_ZEGO_SERVER_SECRET || ''
-      )
+      await agoraEngine.join(
+        process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+        channelName,
+        token,
+        uid
+      );
 
-      await zegoEngine.current.loginRoom(
-        zegoData.channel_name,
-        zegoData.token_data.token,
-        { userID: user?.id.toString() || '', userName: user?.first_name || '' },
-        { userUpdate: true }
-      )
+      const localTrack = await AgoraRTC.createMicrophoneAudioTrack();
+      setLocalAudioTrack(localTrack);
+      await agoraEngine.publish(localTrack);
 
-      localStream.current = await zegoEngine.current.createStream({
-        camera: { audio: true, video: false }
-      })
-
-      await zegoEngine.current.startPublishing(localStream.current)
-
-      // Start call timer
-      startCallTimer()
-
-      // Listen for remote streams
-      zegoEngine.current.on('publisherStateUpdate', (result: any) => {
-        console.log('Publisher state update:', result)
-      })
-
-      zegoEngine.current.on('playerStateUpdate', (result: any) => {
-        console.log('Player state update:', result)
-      })
-
-      // Listen for remote user joining
-      zegoEngine.current.on('roomUserUpdate', (roomID: string, updateType: 'ADD' | 'DELETE', userList: any[]) => {
-        console.log('Room user update:', roomID, updateType, userList)
-        if (updateType === 'ADD') {
-          // Handle remote user joining
-          userList.forEach(user => {
-            if (user.userID !== user?.id.toString()) {
-              // Start playing remote stream
-              zegoEngine.current?.startPlayingStream(user.streamID)
-            }
-          })
+      agoraEngine.on("user-published", async (user: any, mediaType: string) => {
+        await agoraEngine.subscribe(user, mediaType);
+        if (mediaType === "audio") {
+          setRemoteAudioTrack(user.audioTrack);
+          user.audioTrack.play();
         }
-      })
-
+      });
     } catch (error) {
-      console.error('Failed to initialize ZEGOCLOUD:', error)
+      console.error("Error joining call:", error);
       toast({
         variant: "destructive",
-        title: "Error",
-        description: "Failed to initialize voice call. Please try again.",
-      })
+        title: "Call Error",
+        description: "Failed to join the call. Please try again.",
+      });
     }
-  }
-
-  const startCallTimer = () => {
-    setCallDuration(0)
-    callTimerRef.current = setInterval(() => {
-      setCallDuration(prev => prev + 1)
-    }, 1000)
-  }
-
-  const stopCallTimer = () => {
-    if (callTimerRef.current) {
-      clearInterval(callTimerRef.current)
-      callTimerRef.current = null
-    }
-    setCallDuration(0)
-  }
-
-  const toggleMute = () => {
-    if (localStream.current) {
-      const audioTrack = localStream.current.getAudioTracks()[0]
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled
-        setIsMuted(!isMuted)
-      }
-    }
-  }
-
-  const toggleSpeaker = () => {
-    if (zegoEngine.current) {
-      (zegoEngine.current as any).setAudioOutputDevice(isSpeakerOn ? 'earpiece' : 'speaker')
-      setIsSpeakerOn(!isSpeakerOn)
-    }
-  }
-
-  const stopLocalStream = () => {
-    if (localStream.current) {
-      localStream.current.getTracks().forEach(track => track.stop())
-      localStream.current = null
-    }
-    if (zegoEngine.current) {
-      zegoEngine.current.destroyEngine()
-      zegoEngine.current = null
-    }
-    stopCallTimer()
-  }
+  };
 
   const handleInitiateCall = async () => {
+    if (typeof window === 'undefined') return;
+
     try {
-      setCallStatus('calling')
-      setShowCallDialog(true)
-      const response = await initiateCall(session.id)
-      await initializeZegoEngine(response)
+      setCallStatus('calling');
+      setShowCallDialog(true);
+      const response = await initiateCall(session.id);
+      if (response.channel_name && response.token) {
+        await joinCall(response.channel_name, response.token, user?.id!);
+      }
     } catch (error) {
-      console.error('Failed to initiate call:', error)
+      console.error('Failed to initiate call:', error);
       toast({
         variant: "destructive",
         title: "Call Failed",
         description: "Failed to initiate call. Please try again.",
-      })
-      setCallStatus('idle')
-      setShowCallDialog(false)
+      });
+      setCallStatus('idle');
+      setShowCallDialog(false);
     }
-  }
+  };
 
   const handleAcceptCall = async () => {
+    if (typeof window === 'undefined') return;
+
     try {
-      const response = await acceptCall(session.id)
-      setCallStatus('connected')
-      await initializeZegoEngine(response)
+      const response = await acceptCall(session.id);
+      if (response.channel_name && response.token) {
+        await joinCall(response.channel_name, response.token, user?.id!);
+        setCallStatus('connected');
+      }
     } catch (error) {
-      console.error('Failed to accept call:', error)
+      console.error('Failed to accept call:', error);
       toast({
         variant: "destructive",
         title: "Error",
         description: "Failed to accept call. Please try again.",
-      })
+      });
     }
-  }
+  };
 
   const handleRejectCall = async () => {
+    if (typeof window === 'undefined') return;
+
     try {
-      await rejectCall(session.id)
-      setCallStatus('idle')
-      setShowCallDialog(false)
+      await rejectCall(session.id);
+      setCallStatus('idle');
+      setShowCallDialog(false);
     } catch (error) {
-      console.error('Failed to reject call:', error)
+      console.error('Failed to reject call:', error);
     }
-  }
+  };
 
   const handleEndCall = async () => {
+    if (typeof window === 'undefined') return;
+
     try {
-      await endCall(session.id)
-      setCallStatus('idle')
-      setShowCallDialog(false)
-      stopLocalStream()
+      await endCall(session.id);
+      if (localAudioTrack) {
+        localAudioTrack.close();
+      }
+      if (remoteAudioTrack) {
+        remoteAudioTrack.close();
+      }
+      if (agoraEngine) {
+        await agoraEngine.leave();
+      }
+      setCallStatus('idle');
+      setShowCallDialog(false);
     } catch (error) {
-      console.error('Failed to end call:', error)
+      console.error('Failed to end call:', error);
       toast({
         variant: "destructive",
         title: "Error",
         description: "Failed to end call. Please try again.",
-      })
+      });
     }
-  }
+  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -273,10 +225,16 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
   };
 
   const senderName = latestMessage 
-    ? `${latestMessage.receiver?.first_name} ${latestMessage.receiver?.last_name}`:'';
+    ? `${latestMessage.receiver?.first_name} ${latestMessage.receiver?.last_name}`
+    : session.user ? `${session.user.first_name} ${session.user.last_name}` 
+    : 'Anonymous';
+
+  if (typeof window === 'undefined') {
+    return null; // Or a loading state
+  }
 
   return (
-    <ClientOnly>
+    <>
       <div className="p-4 border-b flex items-center justify-between bg-muted/30">
         <div className="flex items-center space-x-3">
           {showBackButton && (
@@ -309,15 +267,15 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
                 <Button 
                   variant="ghost" 
                   size="icon" 
-                  className="text-muted-foreground hover:text-foreground"
-                  disabled={session.status !== 'active'}
-                  onClick={handleInitiateCall}
+                  className={`text-muted-foreground hover:text-foreground ${callStatus !== 'idle' ? 'bg-primary text-primary-foreground' : ''}`}
+                  disabled={session.status !== 'active' || callStatus === 'calling' || callStatus === 'incoming'}
+                  onClick={callStatus === 'connected' ? handleEndCall : handleInitiateCall}
                 >
                   <Phone className="h-5 w-5" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                <p>Voice Call</p>
+                <p>{callStatus === 'connected' ? 'End Call' : 'Voice Call'}</p>
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
@@ -391,12 +349,6 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
             
             <h3 className="text-lg font-semibold">{senderName}</h3>
             
-            {callStatus === 'connected' && (
-              <div className="text-sm text-muted-foreground">
-                {Math.floor(callDuration / 60)}:{(callDuration % 60).toString().padStart(2, '0')}
-              </div>
-            )}
-            
             <div className="flex gap-4">
               {callStatus === 'incoming' && (
                 <>
@@ -409,31 +361,7 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
                 </>
               )}
               
-              {callStatus === 'connected' && (
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className={`h-10 w-10 rounded-full ${isMuted ? 'bg-red-100' : ''}`}
-                    onClick={toggleMute}
-                  >
-                    <Phone className="h-5 w-5" />
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className={`h-10 w-10 rounded-full ${!isSpeakerOn ? 'bg-red-100' : ''}`}
-                    onClick={toggleSpeaker}
-                  >
-                    <Volume2 className="h-5 w-5" />
-                  </Button>
-                  <Button onClick={handleEndCall} variant="destructive" className="h-10 w-10 rounded-full">
-                    <PhoneOff className="h-5 w-5" />
-                  </Button>
-                </div>
-              )}
-              
-              {(callStatus === 'calling') && (
+              {(callStatus === 'calling' || callStatus === 'connected') && (
                 <Button onClick={handleEndCall} variant="destructive">
                   End Call
                 </Button>
@@ -442,6 +370,6 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
           </div>
         </DialogContent>
       </Dialog>
-    </ClientOnly>
+    </>
   );
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { format } from "date-fns"
-import { Send, Paperclip, Smile, FileText, Phone, Volume2, PhoneOff } from "lucide-react"
+import { Send, Paperclip, Smile, FileText, Phone } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -20,8 +20,16 @@ import type { ChatSession, Message } from "@/lib/types"
 import { useToast } from "@/hooks/use-toast"
 import { useUserStore } from "@/stores/userStore"
 import { initiateCall, acceptCall, rejectCall, endCall } from "@/lib/api"
-import Pusher from "pusher-js"
-import { ZegoExpressEngine } from 'zego-express-engine-webrtc'
+
+// We'll import these dynamically in useEffect
+let Pusher: any;
+let AgoraRTC: any;
+
+if (typeof window !== 'undefined') {
+  // Only import on client side
+  Pusher = require('pusher-js');
+  AgoraRTC = require('agora-rtc-sdk-ng');
+}
 
 interface ReverendChatAreaProps {
   session: ChatSession
@@ -38,21 +46,6 @@ interface ReverendChatAreaProps {
   handleQuickResponse: (response: string) => void
   messagesEndRef: React.RefObject<HTMLDivElement>
   textareaRef: React.RefObject<HTMLTextAreaElement>
-}
-
-// Client-side only component wrapper
-const ClientOnly = ({ children }: { children: React.ReactNode }) => {
-  const [isClient, setIsClient] = useState(false)
-
-  useEffect(() => {
-    setIsClient(true)
-  }, [])
-
-  if (!isClient) {
-    return null
-  }
-
-  return <>{children}</>
 }
 
 export function ReverendChatArea({
@@ -76,395 +69,355 @@ export function ReverendChatArea({
   const [showCallDialog, setShowCallDialog] = useState(false)
   const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'incoming' | 'connected'>('idle')
   const [incomingCallData, setIncomingCallData] = useState<any>(null)
-  const zegoEngine = useRef<ZegoExpressEngine | null>(null)
-  const localStream = useRef<MediaStream | null>(null)
-  const [isMuted, setIsMuted] = useState(false)
-  const [isSpeakerOn, setIsSpeakerOn] = useState(true)
-  const [callDuration, setCallDuration] = useState(0)
-  const callTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const [agoraEngine, setAgoraEngine] = useState<any>(null)
+  const [localAudioTrack, setLocalAudioTrack] = useState<any>(null)
+  const [remoteAudioTrack, setRemoteAudioTrack] = useState<any>(null)
+
+  // Initialize Agora client
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+    setAgoraEngine(client);
+
+    return () => {
+      if (localAudioTrack) {
+        localAudioTrack.close();
+      }
+      if (remoteAudioTrack) {
+        remoteAudioTrack.close();
+      }
+      if (client) {
+        client.leave();
+      }
+    };
+  }, []);
 
   useEffect(() => {
-    if (!user) return;
+    if (typeof window === 'undefined' || !user) return;
 
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
-    })
+    });
 
-    const channel = pusher.subscribe(`user.${user.id}`)
+    const channel = pusher.subscribe(`user.${user.id}`);
 
     channel.bind('call.incoming', (data: any) => {
-      setIncomingCallData(data)
-      setCallStatus('incoming')
-      setShowCallDialog(true)
-    })
+      setIncomingCallData(data);
+      setCallStatus('incoming');
+      setShowCallDialog(true);
+    });
 
     channel.bind('call.answered', async (data: any) => {
       if (data.session?.id === session.id) {
-        setCallStatus('connected')
-        await initializeZegoEngine(data.zego_data)
+        setCallStatus('connected');
+        if (data.agora) {
+          await joinCall(data.agora.channel_name, data.agora.token, data.agora.u_id);
+        }
       }
-    })
+    });
 
     channel.bind('call.rejected', (data: any) => {
       if (data.session?.id === session.id) {
-        setCallStatus('idle')
-        setShowCallDialog(false)
+        setCallStatus('idle');
+        setShowCallDialog(false);
         toast({
           title: "Call Rejected",
           description: "The other party rejected the call",
-        })
+        });
       }
-    })
+    });
 
     channel.bind('call.ended', (data: any) => {
       if (data.session?.id === session.id) {
-        setCallStatus('idle')
-        setShowCallDialog(false)
-        stopLocalStream()
-        toast({
-          title: "Call Ended",
-          description: "The call has ended",
-        })
+        handleEndCall();
       }
-    })
+    });
 
     return () => {
-      channel.unbind_all()
-      pusher.unsubscribe(`user.${user.id}`)
-      stopLocalStream()
-    }
-  }, [user?.id, session.id])
+      channel.unbind_all();
+      pusher.unsubscribe(`user.${user.id}`);
+    };
+  }, [user?.id, session.id]);
 
-  const initializeZegoEngine = async (zegoData: any) => {
+  const joinCall = async (channelName: string, token: string, uid: number) => {
+    if (typeof window === 'undefined' || !agoraEngine) return;
+
     try {
-      zegoEngine.current = new ZegoExpressEngine(
-        parseInt(process.env.NEXT_PUBLIC_ZEGO_APP_ID || '0'),
-        process.env.NEXT_PUBLIC_ZEGO_SERVER_SECRET || ''
-      )
+      await agoraEngine.join(
+        process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+        channelName,
+        token,
+        uid
+      );
 
-      await zegoEngine.current.loginRoom(
-        zegoData.channel_name,
-        zegoData.token_data.token,
-        { userID: user?.id.toString() || '', userName: user?.first_name || '' },
-        { userUpdate: true }
-      )
+      const localTrack = await AgoraRTC.createMicrophoneAudioTrack();
+      setLocalAudioTrack(localTrack);
+      await agoraEngine.publish(localTrack);
 
-      localStream.current = await zegoEngine.current.createStream({
-        camera: { audio: true, video: false }
-      })
-
-      await (zegoEngine.current as any).startPublishing(localStream.current)
-
-      // Start call timer
-      startCallTimer()
-
-      // Listen for remote streams
-      zegoEngine.current.on('publisherStateUpdate', (result: any) => {
-        console.log('Publisher state update:', result)
-      })
-
-      zegoEngine.current.on('playerStateUpdate', (result: any) => {
-        console.log('Player state update:', result)
-      })
-
-      // Listen for remote user joining
-      zegoEngine.current.on('roomUserUpdate', (roomID: string, updateType: 'ADD' | 'DELETE', userList: any[]) => {
-        console.log('Room user update:', roomID, updateType, userList)
-        if (updateType === 'ADD') {
-          // Handle remote user joining
-          userList.forEach(user => {
-            if (user.userID !== user?.id.toString()) {
-              // Start playing remote stream
-              zegoEngine.current?.startPlayingStream(user.streamID)
-            }
-          })
+      agoraEngine.on("user-published", async (user: any, mediaType: string) => {
+        await agoraEngine.subscribe(user, mediaType);
+        if (mediaType === "audio") {
+          setRemoteAudioTrack(user.audioTrack);
+          user.audioTrack.play();
         }
-      })
-
+      });
     } catch (error) {
-      console.error('Failed to initialize ZEGOCLOUD:', error)
+      console.error("Error joining call:", error);
       toast({
         variant: "destructive",
-        title: "Error",
-        description: "Failed to initialize voice call. Please try again.",
-      })
+        title: "Call Error",
+        description: "Failed to join the call. Please try again.",
+      });
     }
-  }
-
-  const startCallTimer = () => {
-    setCallDuration(0)
-    callTimerRef.current = setInterval(() => {
-      setCallDuration(prev => prev + 1)
-    }, 1000)
-  }
-
-  const stopCallTimer = () => {
-    if (callTimerRef.current) {
-      clearInterval(callTimerRef.current)
-      callTimerRef.current = null
-    }
-    setCallDuration(0)
-  }
-
-  const toggleMute = () => {
-    if (localStream.current) {
-      const audioTrack = localStream.current.getAudioTracks()[0]
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled
-        setIsMuted(!isMuted)
-      }
-    }
-  }
-
-  const toggleSpeaker = () => {
-    if (zegoEngine.current) {
-      (zegoEngine.current as any).setAudioOutputDevice(isSpeakerOn ? 'earpiece' : 'speaker')
-      setIsSpeakerOn(!isSpeakerOn)
-    }
-  }
-
-  const stopLocalStream = () => {
-    if (localStream.current) {
-      localStream.current.getTracks().forEach(track => track.stop())
-      localStream.current = null
-    }
-    if (zegoEngine.current) {
-      zegoEngine.current.destroyEngine()
-      zegoEngine.current = null
-    }
-    stopCallTimer()
-  }
+  };
 
   const handleInitiateCall = async () => {
+    if (typeof window === 'undefined') return;
+
     try {
-      setCallStatus('calling')
-      setShowCallDialog(true)
-      const response = await initiateCall(session.id)
-      await initializeZegoEngine(response)
+      setCallStatus('calling');
+      setShowCallDialog(true);
+      const response = await initiateCall(session.id);
+      if (response.channel_name && response.token) {
+        await joinCall(response.channel_name, response.token, user?.id!);
+      }
     } catch (error) {
-      console.error('Failed to initiate call:', error)
+      console.error('Failed to initiate call:', error);
       toast({
         variant: "destructive",
         title: "Call Failed",
         description: "Failed to initiate call. Please try again.",
-      })
-      setCallStatus('idle')
-      setShowCallDialog(false)
+      });
+      setCallStatus('idle');
+      setShowCallDialog(false);
     }
-  }
+  };
 
   const handleAcceptCall = async () => {
+    if (typeof window === 'undefined') return;
+
     try {
-      const response = await acceptCall(session.id)
-      setCallStatus('connected')
-      await initializeZegoEngine(response)
+      const response = await acceptCall(session.id);
+      if (response.channel_name && response.token) {
+        await joinCall(response.channel_name, response.token, user?.id!);
+        setCallStatus('connected');
+      }
     } catch (error) {
-      console.error('Failed to accept call:', error)
+      console.error('Failed to accept call:', error);
       toast({
         variant: "destructive",
         title: "Error",
         description: "Failed to accept call. Please try again.",
-      })
+      });
     }
-  }
+  };
 
   const handleRejectCall = async () => {
+    if (typeof window === 'undefined') return;
+
     try {
-      await rejectCall(session.id)
-      setCallStatus('idle')
-      setShowCallDialog(false)
+      await rejectCall(session.id);
+      setCallStatus('idle');
+      setShowCallDialog(false);
     } catch (error) {
-      console.error('Failed to reject call:', error)
+      console.error('Failed to reject call:', error);
     }
-  }
+  };
 
   const handleEndCall = async () => {
+    if (typeof window === 'undefined') return;
+
     try {
-      await endCall(session.id)
-      setCallStatus('idle')
-      setShowCallDialog(false)
-      stopLocalStream()
+      await endCall(session.id);
+      if (localAudioTrack) {
+        localAudioTrack.close();
+      }
+      if (remoteAudioTrack) {
+        remoteAudioTrack.close();
+      }
+      if (agoraEngine) {
+        await agoraEngine.leave();
+      }
+      setCallStatus('idle');
+      setShowCallDialog(false);
     } catch (error) {
-      console.error('Failed to end call:', error)
+      console.error('Failed to end call:', error);
       toast({
         variant: "destructive",
         title: "Error",
         description: "Failed to end call. Please try again.",
-      })
+      });
     }
-  }
+  };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      onSendMessage()
+      e.preventDefault();
+      onSendMessage();
     }
+  };
+
+  // Only render if we're on the client side
+  if (typeof window === 'undefined') {
+    return null; // Or a loading state
   }
 
   return (
-    <ClientOnly>
-      <div className="flex-1 flex flex-col h-full overflow-hidden">
-        <ScrollArea className="flex-1 p-4">
-          <div className="space-y-4">
-            {/* Session start indicator */}
-            <div className="flex justify-center">
-              <Badge variant="outline" className="bg-muted/50 text-muted-foreground">
-                Session started {format(new Date(session.created_at), "MMMM d, yyyy")}
-              </Badge>
-            </div>
+    <>
+    <div className="flex-1 flex flex-col h-full overflow-hidden">
+      <ScrollArea className="flex-1 p-4">
+        <div className="space-y-4">
+          {/* Session start indicator */}
+          <div className="flex justify-center">
+            <Badge variant="outline" className="bg-muted/50 text-muted-foreground">
+              Session started {format(new Date(session.created_at), "MMMM d, yyyy")}
+            </Badge>
+          </div>
 
-            {/* Initial message */}
-            <div className="flex justify-start">
-              <div className="flex items-start space-x-2 max-w-[80%]">
-                <Avatar className="h-8 w-8">
-                  <AvatarImage src={session.user?.avatar_url} />
-                  <AvatarFallback>{session.user?.first_name?.charAt(0) || "U"}</AvatarFallback>
+          {/* Initial message */}
+          <div className="flex justify-start">
+            <div className="flex items-start space-x-2 max-w-[80%]">
+              <Avatar className="h-8 w-8">
+                <AvatarImage src={session.user?.avatar_url} />
+                <AvatarFallback>{session.user?.first_name?.charAt(0) || "U"}</AvatarFallback>
+              </Avatar>
+              <div className="flex flex-col">
+                <div className="rounded-lg p-3 bg-muted rounded-tl-none">
+                  <p className="text-sm">{session.initial_message}</p>
+                </div>
+                <div className="flex mt-1 text-xs text-muted-foreground">
+                  <span>{format(new Date(session.created_at), "h:mm a")}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Messages */}
+          {messages.map((message) => (
+            <div key={message.id} className={`flex ${message.sender_id === session.reverend_id ? "justify-end" : "justify-start"}`}>
+              <div
+                className={`flex items-start space-x-2 max-w-[80%] ${
+                  message.sender_id === session.reverend_id ? "flex-row-reverse space-x-reverse" : ""
+                }`}
+              >
+                <Avatar className={`h-8 w-8 ${message.sender_id === session.reverend_id ? "opacity-0" : ""}`}>
+                  <AvatarImage src={message.sender?.avatar_url} />
+                  <AvatarFallback>
+                    {message.sender_id === session.reverend_id ? "R" : message.sender?.first_name?.charAt(0) || "U"}
+                  </AvatarFallback>
                 </Avatar>
                 <div className="flex flex-col">
-                  <div className="rounded-lg p-3 bg-muted rounded-tl-none">
-                    <p className="text-sm">{session.initial_message}</p>
-                  </div>
-                  <div className="flex mt-1 text-xs text-muted-foreground">
-                    <span>{format(new Date(session.created_at), "h:mm a")}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Messages */}
-            {messages.map((message) => (
-              <div key={message.id} className={`flex ${message.sender_id === session.reverend_id ? "justify-end" : "justify-start"}`}>
-                <div
-                  className={`flex items-start space-x-2 max-w-[80%] ${
-                    message.sender_id === session.reverend_id ? "flex-row-reverse space-x-reverse" : ""
-                  }`}
-                >
-                  <Avatar className={`h-8 w-8 ${message.sender_id === session.reverend_id ? "opacity-0" : ""}`}>
-                    <AvatarImage src={message.sender?.avatar_url} />
-                    <AvatarFallback>
-                      {message.sender_id === session.reverend_id ? "R" : message.sender?.first_name?.charAt(0) || "U"}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex flex-col">
-                    <div
-                      className={`rounded-lg p-3 ${
-                        message.sender_id === session.reverend_id
-                          ? "bg-primary text-primary-foreground rounded-tr-none"
-                          : "bg-muted rounded-tl-none"
-                      }`}
-                    >
-                      <p className="text-sm whitespace-pre-wrap">{message.message}</p>
-                    </div>
-                    <div
-                      className={`flex mt-1 text-xs text-muted-foreground ${
-                        message.sender_id === session.reverend_id ? "justify-end" : ""
-                      }`}
-                    >
-                      <span>{format(new Date(message.created_at), "h:mm a")}</span>
-                      {message.sender_id === session.reverend_id && (
-                        <span className="ml-1">
-                          {message.status === "seen" ? (
-                            <CheckCheck className="h-3 w-3 text-blue-500" />
-                          ) : message.status === "delivered" ? (
-                            <CheckCheck className="h-3 w-3 text-gray-500" />
-                          ) : (
-                            <Check className="h-3 w-3 text-gray-500" />
-                          )}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            <div ref={messagesEndRef} />
-          </div>
-        </ScrollArea>
-
-        {/* Input Area */}
-        <div className="p-4 border-t">
-          <div className="relative">
-            <Textarea
-              ref={textareaRef}
-              value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
-              placeholder="Type your message..."
-              className="min-h-[100px] pr-24 resize-none"
-              onKeyDown={handleKeyPress}
-            />
-            <div className="absolute bottom-2 right-2 flex items-center space-x-1">
-              <Dialog open={showQuickResponses} onOpenChange={setShowQuickResponses}>
-                <DialogContent className="sm:max-w-[525px]">
-                  <DialogHeader>
-                    <DialogTitle>Quick Responses</DialogTitle>
-                    <DialogDescription>Select a pre-written response to quickly reply to the user.</DialogDescription>
-                  </DialogHeader>
-                  <Tabs
-                    value={selectedQuickResponseCategory}
-                    onValueChange={setSelectedQuickResponseCategory}
-                    className="w-full"
+                  <div
+                    className={`rounded-lg p-3 ${
+                      message.sender_id === session.reverend_id
+                        ? "bg-primary text-primary-foreground rounded-tr-none"
+                        : "bg-muted rounded-tl-none"
+                    }`}
                   >
-                    <TabsList className="grid grid-cols-4 mb-4">
-                      {quickResponses.map((category) => (
-                        <TabsTrigger key={category.id} value={category.category}>
-                          {category.category}
-                        </TabsTrigger>
-                      ))}
-                    </TabsList>
-                    {quickResponses.map((category) => (
-                      <TabsContent key={category.id} value={category.category} className="mt-0">
-                        <ScrollArea className="h-[300px]">
-                          <div className="space-y-2">
-                            {category.responses.map((response: string, index: number) => (
-                              <Card
-                                key={index}
-                                className="p-3 cursor-pointer hover:bg-muted/50 transition-colors"
-                                onClick={() => handleQuickResponse(response)}
-                              >
-                                <p className="text-sm">{response}</p>
-                              </Card>
-                            ))}
-                          </div>
-                        </ScrollArea>
-                      </TabsContent>
-                    ))}
-                  </Tabs>
-                </DialogContent>
-              </Dialog>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="h-8 w-8 rounded-full"
-                onClick={handleInitiateCall}
-                disabled={session.status !== 'active'}
-              >
-                <Phone className="h-4 w-4" />
-              </Button>
-              <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
-                <Paperclip className="h-4 w-4" />
-              </Button>
-              <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
-                <Smile className="h-4 w-4" />
-              </Button>
-              <Button
-                onClick={onSendMessage}
-                disabled={!newMessage.trim() || isSending}
-                size="sm"
-                className="rounded-full px-4"
-              >
-                {isSending ? (
-                  <span className="animate-pulse">Sending...</span>
-                ) : (
-                  <>
-                    <Send className="h-4 w-4 mr-1" /> Send
-                  </>
-                )}
-              </Button>
+                    <p className="text-sm whitespace-pre-wrap">{message.message}</p>
+                  </div>
+                  <div
+                    className={`flex mt-1 text-xs text-muted-foreground ${
+                      message.sender_id === session.reverend_id ? "justify-end" : ""
+                    }`}
+                  >
+                    <span>{format(new Date(message.created_at), "h:mm a")}</span>
+                    {message.sender_id === session.reverend_id && (
+                      <span className="ml-1">
+                        {message.status === "seen" ? (
+                          <CheckCheck className="h-3 w-3 text-blue-500" />
+                        ) : message.status === "delivered" ? (
+                          <CheckCheck className="h-3 w-3 text-gray-500" />
+                        ) : (
+                          <Check className="h-3 w-3 text-gray-500" />
+                        )}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
+          ))}
+
+          <div ref={messagesEndRef} />
+        </div>
+      </ScrollArea>
+
+      {/* Input Area */}
+      <div className="p-4 border-t">
+        <div className="relative">
+          <Textarea
+            ref={textareaRef}
+            value={newMessage}
+            onChange={(e) => setNewMessage(e.target.value)}
+            placeholder="Type your message..."
+            className="min-h-[100px] pr-24 resize-none"
+            onKeyDown={handleKeyPress}
+          />
+          <div className="absolute bottom-2 right-2 flex items-center space-x-1">
+            <Dialog open={showQuickResponses} onOpenChange={setShowQuickResponses}>
+              <DialogContent className="sm:max-w-[525px]">
+                <DialogHeader>
+                  <DialogTitle>Quick Responses</DialogTitle>
+                  <DialogDescription>Select a pre-written response to quickly reply to the user.</DialogDescription>
+                </DialogHeader>
+                <Tabs
+                  value={selectedQuickResponseCategory}
+                  onValueChange={setSelectedQuickResponseCategory}
+                  className="w-full"
+                >
+                  <TabsList className="grid grid-cols-4 mb-4">
+                    {quickResponses.map((category) => (
+                      <TabsTrigger key={category.id} value={category.category}>
+                        {category.category}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                  {quickResponses.map((category) => (
+                    <TabsContent key={category.id} value={category.category} className="mt-0">
+                      <ScrollArea className="h-[300px]">
+                        <div className="space-y-2">
+                          {category.responses.map((response: string, index: number) => (
+                            <Card
+                              key={index}
+                              className="p-3 cursor-pointer hover:bg-muted/50 transition-colors"
+                              onClick={() => handleQuickResponse(response)}
+                            >
+                              <p className="text-sm">{response}</p>
+                            </Card>
+                          ))}
+                        </div>
+                      </ScrollArea>
+                    </TabsContent>
+                  ))}
+                </Tabs>
+              </DialogContent>
+            </Dialog>
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
+              <Paperclip className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
+              <Smile className="h-4 w-4" />
+            </Button>
+            <Button
+              onClick={onSendMessage}
+              disabled={!newMessage.trim() || isSending}
+              size="sm"
+              className="rounded-full px-4"
+            >
+              {isSending ? (
+                <span className="animate-pulse">Sending...</span>
+              ) : (
+                <>
+                  <Send className="h-4 w-4 mr-1" /> Send
+                </>
+              )}
+            </Button>
           </div>
         </div>
       </div>
+    </div>
 
       <Dialog open={showCallDialog} onOpenChange={setShowCallDialog}>
         <DialogContent>
@@ -484,12 +437,6 @@ export function ReverendChatArea({
             
             <h3 className="text-lg font-semibold">{session.user?.first_name || 'Anonymous'}</h3>
             
-            {callStatus === 'connected' && (
-              <div className="text-sm text-muted-foreground">
-                {Math.floor(callDuration / 60)}:{(callDuration % 60).toString().padStart(2, '0')}
-              </div>
-            )}
-            
             <div className="flex gap-4">
               {callStatus === 'incoming' && (
                 <>
@@ -502,31 +449,7 @@ export function ReverendChatArea({
                 </>
               )}
               
-              {callStatus === 'connected' && (
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className={`h-10 w-10 rounded-full ${isMuted ? 'bg-red-100' : ''}`}
-                    onClick={toggleMute}
-                  >
-                    <Phone className="h-5 w-5" />
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className={`h-10 w-10 rounded-full ${!isSpeakerOn ? 'bg-red-100' : ''}`}
-                    onClick={toggleSpeaker}
-                  >
-                    <Volume2 className="h-5 w-5" />
-                  </Button>
-                  <Button onClick={handleEndCall} variant="destructive" className="h-10 w-10 rounded-full">
-                    <PhoneOff className="h-5 w-5" />
-                  </Button>
-                </div>
-              )}
-              
-              {(callStatus === 'calling') && (
+              {(callStatus === 'calling' || callStatus === 'connected') && (
                 <Button onClick={handleEndCall} variant="destructive">
                   End Call
                 </Button>
@@ -535,6 +458,6 @@ export function ReverendChatArea({
           </div>
         </DialogContent>
       </Dialog>
-    </ClientOnly>
-  )
+    </>
+  );
 }
