@@ -83,17 +83,11 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
     channel.bind('call.rejected', async (data: any) => {
       console.log("call.rejected event received", data.session?.id);
-      
       if (data.session?.id === session.id) {
-        console.log("Handling rejected call for session:", session.id);
-        
-        // First update UI state
-        setCallStatus('idle');
-        setShowCallDialog(false);
-        
-        // Then cleanup audio tracks
-        await cleanupAudioTracks();
-
+          console.log("Handling rejected call for session:", session.id);
+          await cleanupAudioTracks();
+          setCallStatus('idle');
+          setShowCallDialog(false);
         if (callStatus === 'calling') {
           toast({
             title: "Call Rejected",

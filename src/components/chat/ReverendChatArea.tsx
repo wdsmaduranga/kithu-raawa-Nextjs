@@ -195,9 +195,12 @@ export function ReverendChatArea({
       }
     });
 
-    channel.bind('call.ended', (data: any) => {
+    channel.bind('call.ended', async (data: any) => {
       if (data.session?.id === session.id) {
-        // handleEndCall();
+        console.log("Handling ended call for session:", session.id);
+        await cleanupAudioTracks();
+        setCallStatus('idle');
+        setShowCallDialog(false);
       }
     });
 
