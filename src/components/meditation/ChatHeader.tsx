@@ -140,13 +140,16 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
     if (typeof window === 'undefined') return;
 
     try {
+      // Check audio device first
+      const hasAudioDevice = await checkAudioDevice();
+      if (!hasAudioDevice) return;
+
       setCallStatus('calling');
       setShowCallDialog(true);
       const response = await initiateCall(session.id);
       if (!response.channel_name || !response.token) {
         throw new Error('Invalid response from call initiation');
       }
-      // Don't join the call yet - wait for answer
     } catch (error) {
       console.error('Failed to initiate call:', error);
       toast({
@@ -163,37 +166,143 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
     if (typeof window === 'undefined' || !agoraEngine) return;
 
     try {
-      console.log("Joining call with:", { channelName, token, uid });
+      console.log("Starting to join call with:", { channelName, token, uid });
+      
+      // First leave any existing call
+      if (agoraEngine.connectionState === 'CONNECTED') {
+        console.log("Leaving existing call before joining new one");
+        await agoraEngine.leave();
+      }
+
+      // Enable audio autoplay
+      AgoraRTC.setParameter('AUDIO_AUTO_PLAY', true);
+
+      console.log("Joining Agora channel...");
       await agoraEngine.join(
         process.env.NEXT_PUBLIC_AGORA_APP_ID!,
         channelName,
         token,
         uid
       );
+      console.log("Successfully joined Agora channel");
 
-      // Only create audio track after successfully joining the channel
+      // Create and publish local audio track with explicit settings
       console.log("Creating microphone audio track...");
-      const localTrack = await AgoraRTC.createMicrophoneAudioTrack();
+      const localTrack = await AgoraRTC.createMicrophoneAudioTrack({
+        encoderConfig: "music_standard",
+        AEC: true, // Enable echo cancellation
+        ANS: true, // Enable noise suppression
+        AGC: true  // Enable auto gain control
+      });
+      
+      // Set volume to maximum
+      localTrack.setVolume(100);
+      
+      console.log("Local audio track created, publishing...");
       setLocalAudioTrack(localTrack);
-      console.log("Publishing audio track...");
       await agoraEngine.publish(localTrack);
+      console.log("Local audio track published successfully");
 
+      // Set up user-published event handler
       agoraEngine.on("user-published", async (user: any, mediaType: string) => {
-        await agoraEngine.subscribe(user, mediaType);
+        console.log("Remote user published:", { userId: user.uid, mediaType });
+        
         if (mediaType === "audio") {
-          console.log("Received remote audio track");
-          setRemoteAudioTrack(user.audioTrack);
-          user.audioTrack.play();
+          console.log("Subscribing to remote audio...");
+          await agoraEngine.subscribe(user, mediaType);
+          console.log("Successfully subscribed to remote audio");
+          
+          const remoteTrack = user.audioTrack;
+          setRemoteAudioTrack(remoteTrack);
+          
+          // Set remote audio volume to maximum
+          remoteTrack.setVolume(100);
+          
+          console.log("Playing remote audio track...");
+          try {
+            await remoteTrack.play();
+            console.log("Remote audio playback started");
+            
+            // Verify audio is actually playing
+            const isPlaying = remoteTrack.isPlaying;
+            console.log("Remote audio track playing status:", isPlaying);
+            
+            // Check audio settings
+            console.log("Remote audio track settings:", {
+              volume: remoteTrack.getVolume(),
+              state: remoteTrack.getState(),
+            });
+          } catch (error) {
+            console.error("Error playing remote audio:", error);
+            // Try alternative playback method
+            try {
+              console.log("Trying alternative playback method...");
+              await remoteTrack.play(null as any);
+              console.log("Alternative playback method succeeded");
+            } catch (e) {
+              console.error("Alternative playback also failed:", e);
+            }
+          }
         }
       });
+
+      // Set up user-unpublished event handler
+      agoraEngine.on("user-unpublished", async (user: any, mediaType: string) => {
+        console.log("Remote user unpublished:", { userId: user.uid, mediaType });
+        if (mediaType === "audio") {
+          if (user.audioTrack) {
+            user.audioTrack.stop();
+          }
+          setRemoteAudioTrack(null);
+        }
+      });
+
+      // Set up connection-state-change handler
+      agoraEngine.on("connection-state-change", (state: string, reason: string) => {
+        console.log("Connection state changed:", { state, reason });
+      });
+
+      // Add error event handler
+      agoraEngine.on("error", (err: any) => {
+        console.error("Agora engine error:", err);
+      });
+
+      // Add exception event handler
+      agoraEngine.on("exception", (event: any) => {
+        console.warn("Agora engine exception:", event);
+      });
+
     } catch (error) {
-      console.error("Error joining call:", error);
+      console.error("Error in joinCall:", error);
       await cleanupAudioTracks();
       toast({
         variant: "destructive",
         title: "Call Error",
-        description: "Failed to join the call. Please try again.",
+        description: "Failed to join the call. Please check your audio permissions and try again.",
       });
+      throw error;
+    }
+  };
+
+  // Add function to check audio device
+  const checkAudioDevice = async () => {
+    try {
+      const devices = await AgoraRTC.getMicrophones();
+      console.log("Available audio devices:", devices);
+      
+      if (devices.length === 0) {
+        console.error("No audio devices found!");
+        toast({
+          variant: "destructive",
+          title: "No Audio Device",
+          description: "No microphone found. Please connect a microphone and try again.",
+        });
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.error("Error checking audio devices:", error);
+      return false;
     }
   };
 
@@ -218,19 +327,14 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
   const cleanupAudioTracks = async () => {
     try {
-      console.log("Cleaning up audio tracks...");
+      console.log("Starting audio cleanup...");
       
       // Clean up local audio track
       if (localAudioTrack) {
         console.log("Closing local audio track...");
         try {
-          // Try to stop first
+          localAudioTrack.setEnabled(false);
           await localAudioTrack.stop();
-        } catch (e) {
-          console.log("Stop not available for local track, proceeding with close");
-        }
-        
-        try {
           await localAudioTrack.close();
         } catch (e) {
           console.error("Error closing local track:", e);
@@ -242,27 +346,22 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       if (remoteAudioTrack) {
         console.log("Closing remote audio track...");
         try {
-          // Try to stop first
-          await remoteAudioTrack.stop();
-        } catch (e) {
-          console.log("Stop not available for remote track, proceeding with close");
-        }
-        
-        try {
-          await remoteAudioTrack.close();
+          remoteAudioTrack.stop();
+          remoteAudioTrack.close();
         } catch (e) {
           console.error("Error closing remote track:", e);
         }
         setRemoteAudioTrack(null);
       }
 
-      // Leave the Agora engine
-      if (agoraEngine) {
-        console.log("Leaving Agora engine...");
+      // Leave the Agora channel
+      if (agoraEngine && agoraEngine.connectionState === 'CONNECTED') {
+        console.log("Leaving Agora channel...");
         try {
           await agoraEngine.leave();
+          console.log("Successfully left Agora channel");
         } catch (e) {
-          console.error("Error leaving Agora engine:", e);
+          console.error("Error leaving Agora channel:", e);
         }
       }
 
