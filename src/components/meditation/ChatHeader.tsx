@@ -11,14 +11,14 @@ import { useToast } from "@/hooks/use-toast"
 import { useUserStore } from "@/stores/userStore"
 
 // We'll import these dynamically in useEffect
-let Pusher: any;
 let AgoraRTC: any;
+let Pusher: any;
 
-if (typeof window !== 'undefined') {
-  // Only import on client side
-  Pusher = require('pusher-js');
-  AgoraRTC = require('agora-rtc-sdk-ng');
-}
+// Configure Agora client
+const agoraConfig = {
+  mode: "rtc",
+  codec: "vp8"
+} as const;
 
 interface ChatHeaderProps {
   session: ChatSession;
@@ -42,10 +42,20 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
 
   // Initialize Agora client
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    const initializeAgora = async () => {
+      if (typeof window === 'undefined') return;
+      
+      try {
+        // Dynamically import Agora
+        AgoraRTC = (await import('agora-rtc-sdk-ng')).default;
+        const client = AgoraRTC.createClient(agoraConfig);
+        setAgoraEngine(client);
+      } catch (error) {
+        console.error("Failed to initialize Agora:", error);
+      }
+    };
 
-    const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
-    setAgoraEngine(client);
+    initializeAgora();
 
     return () => {
       if (localAudioTrack) {
@@ -54,90 +64,95 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
       if (remoteAudioTrack) {
         remoteAudioTrack.close();
       }
-      if (client) {
-        client.leave();
+      if (agoraEngine) {
+        agoraEngine.leave();
       }
     };
   }, []);
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !user) return;
+    const initializePusher = async () => {
+      if (typeof window === 'undefined' || !user) return;
 
-    const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
-      cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
-    });
+      try {
+        // Dynamically import Pusher
+        Pusher = (await import('pusher-js')).default;
+        const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
+          cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
+        });
 
-    const channel = pusher.subscribe(`user.${user.id}`);
+        const channel = pusher.subscribe(`user.${user.id}`);
 
-    channel.bind('call.incoming', (data: any) => {
-      setIncomingCallData(data);
-      setCallStatus('incoming');
-      setShowCallDialog(true);
-    });
+        channel.bind('call.incoming', (data: any) => {
+          setIncomingCallData(data);
+          setCallStatus('incoming');
+          setShowCallDialog(true);
+        });
 
-    channel.bind('call.answered', async (data: any) => {
-      console.log("Call answered with data:", data);
-      if (data.session?.id === session.id) {
-        try {
-          // Extract Agora data from the response
-          const agoraData = data.agora || {
-            channel_name: `chat_session_${session.id}`,
-            token: data.token,
-            u_id: data.u_id
-          };
-          
-          if (!agoraData.channel_name || !agoraData.token) {
-            throw new Error('Invalid Agora data received');
+        channel.bind('call.answered', async (data: any) => {
+          console.log("Call answered with data:", data);
+          if (data.session?.id === session.id) {
+            try {
+              // Extract Agora data from the response
+              const agoraData = data.agora || {
+                channel_name: `chat_session_${session.id}`,
+                token: data.token,
+                u_id: data.u_id
+              };
+              
+              if (!agoraData.channel_name || !agoraData.token) {
+                throw new Error('Invalid Agora data received');
+              }
+
+              console.log("Joining call with Agora data:", agoraData);
+              await joinCall(agoraData.channel_name, agoraData.token, user?.id!);
+              setCallStatus('connected');
+            } catch (error) {
+              console.error("Error joining call after answer:", error);
+              await cleanupAudioTracks();
+              setCallStatus('idle');
+              setShowCallDialog(false);
+              toast({
+                variant: "destructive",
+                title: "Call Error",
+                description: "Failed to join the call. Please try again.",
+              });
+            }
           }
+        });
 
-          console.log("Joining call with Agora data:", agoraData);
-          await joinCall(agoraData.channel_name, agoraData.token, user?.id!);
-          setCallStatus('connected');
-        } catch (error) {
-          console.error("Error joining call after answer:", error);
-          await cleanupAudioTracks();
-          setCallStatus('idle');
-          setShowCallDialog(false);
-          toast({
-            variant: "destructive",
-            title: "Call Error",
-            description: "Failed to join the call. Please try again.",
-          });
-        }
+        channel.bind('call.rejected', async (data: any) => {
+          console.log("call.rejected", data);
+          
+          if (data.session?.id === session.id) {
+              console.log("Handling rejected call for session:", session.id);
+              await cleanupAudioTracks();
+              setCallStatus('idle');
+              setShowCallDialog(false);
+          }
+        });
+
+        channel.bind('call.ended', async (data: any) => {
+          console.log("call.ended", data);
+          if (data.session?.id === session.id) {
+            console.log("Handling ended call for session:", session.id);
+            await cleanupAudioTracks();
+            setCallStatus('idle');
+            setShowCallDialog(false);
+          }
+        });
+
+        return () => {
+          channel.unbind_all();
+          pusher.unsubscribe(`user.${user.id}`);
+        };
+      } catch (error) {
+        console.error("Failed to initialize Pusher:", error);
       }
-    });
-
-    channel.bind('call.rejected', async (data: any) => {
-      console.log("call.rejected", data);
-      
-      if (data.session?.id === session.id) {
-          console.log("Handling rejected call for session:", session.id);
-          await cleanupAudioTracks();
-          setCallStatus('idle');
-          setShowCallDialog(false);
-      }
-    });
-
-    channel.bind('call.ended', async (data: any) => {
-      console.log("call.ended", data);
-      if (data.session?.id === session.id) {
-        console.log("Handling ended call for session:", session.id);
-        await cleanupAudioTracks();
-        setCallStatus('idle');
-        setShowCallDialog(false);
-      }
-    });
-
-    // Cleanup on unmount
-    return () => {
-      console.log("Component unmounting - cleaning up resources");
-      cleanupAudioTracks().catch(e => {
-        console.error("Cleanup error on unmount:", e);
-      });
-      channel.unbind_all();
-      pusher.unsubscribe(`user.${user.id}`);
     };
-  }, [user?.id, session.id, callStatus]);
+
+    initializePusher();
+  }, [user?.id]);
 
   const handleInitiateCall = async () => {
     if (typeof window === 'undefined') return;
@@ -177,8 +192,15 @@ export function ChatHeader({ session, latestMessage, onInfoClick, showBackButton
         await agoraEngine.leave();
       }
 
-      // Enable audio autoplay
-      AgoraRTC.setParameter('AUDIO_AUTO_PLAY', true);
+      // Check and set up audio devices
+      const devices = await AgoraRTC.getDevices();
+      const audioDevices = devices.filter((device: { kind: string }) => device.kind === 'audiooutput');
+      console.log("Available audio output devices:", audioDevices);
+
+      if (audioDevices.length > 0) {
+        await AgoraRTC.getPlaybackDevices();
+        console.log("Audio playback devices initialized");
+      }
 
       console.log("Joining Agora channel...");
       await agoraEngine.join(

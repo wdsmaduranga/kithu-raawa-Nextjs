@@ -22,14 +22,14 @@ import { useUserStore } from "@/stores/userStore"
 import { initiateCall, acceptCall, rejectCall, endCall } from "@/lib/api"
 
 // We'll import these dynamically in useEffect
-let Pusher: any;
 let AgoraRTC: any;
+let Pusher: any;
 
-if (typeof window !== 'undefined') {
-  // Only import on client side
-  Pusher = require('pusher-js');
-  AgoraRTC = require('agora-rtc-sdk-ng');
-}
+// Configure Agora client
+const agoraConfig = {
+  mode: "rtc",
+  codec: "vp8"
+} as const;
 
 interface ReverendChatAreaProps {
   session: ChatSession
@@ -78,10 +78,20 @@ export function ReverendChatArea({
 
   // Initialize Agora client
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    const initializeAgora = async () => {
+      if (typeof window === 'undefined') return;
+      
+      try {
+        // Dynamically import Agora
+        AgoraRTC = (await import('agora-rtc-sdk-ng')).default;
+        const client = AgoraRTC.createClient(agoraConfig);
+        setAgoraEngine(client);
+      } catch (error) {
+        console.error("Failed to initialize Agora:", error);
+      }
+    };
 
-    const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
-    setAgoraEngine(client);
+    initializeAgora();
 
     return () => {
       if (localAudioTrack) {
@@ -90,11 +100,119 @@ export function ReverendChatArea({
       if (remoteAudioTrack) {
         remoteAudioTrack.close();
       }
-      if (client) {
-        client.leave();
+      if (agoraEngine) {
+        agoraEngine.leave();
       }
     };
   }, []);
+
+  useEffect(() => {
+    const initializePusher = async () => {
+      if (typeof window === 'undefined' || !user) return;
+
+      try {
+        // Dynamically import Pusher
+        Pusher = (await import('pusher-js')).default;
+        const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
+          cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
+        });
+
+        const channel = pusher.subscribe(`user.${user.id}`);
+
+        channel.bind('call.incoming', (data: any) => {
+          setIncomingCallData(data);
+          setCallStatus('incoming');
+          setShowCallDialog(true);
+        });
+
+        channel.bind('call.answered', async (data: any) => {
+          console.log("Call answered with data:", data);
+          if (data.session?.id === session.id) {
+            try {
+              // Extract Agora data from the response
+              const agoraData = data.agora || {
+                channel_name: `chat_session_${session.id}`,
+                token: data.token,
+                u_id: data.caller_id
+              };
+              
+              if (!agoraData.channel_name || !agoraData.token) {
+                throw new Error('Invalid Agora data received');
+              }
+
+              console.log("Joining call with Agora data:", agoraData);
+              await joinCall(agoraData.channel_name, agoraData.token, user?.id!);
+              setCallStatus('connected');
+            } catch (error) {
+              console.error("Error joining call after answer:", error);
+              await cleanupAudioTracks();
+              setCallStatus('idle');
+              setShowCallDialog(false);
+              toast({
+                variant: "destructive",
+                title: "Call Error",
+                description: "Failed to join the call. Please try again.",
+              });
+            }
+          }
+        });
+
+        channel.bind('call.rejected', async (data: any) => {
+          console.log("call.rejected event received", data.session?.id);
+          
+          if (data.session?.id === session.id) {
+            console.log("Handling rejected call for session:", session.id);
+            
+            // First update UI state
+            setCallStatus('idle');
+            setShowCallDialog(false);
+                  // Clean up any existing audio tracks before rejecting
+            if (localAudioTrack) {
+              localAudioTrack.close();
+              setLocalAudioTrack(null);
+            }
+            if (remoteAudioTrack) {
+              remoteAudioTrack.close();
+              setRemoteAudioTrack(null);
+            }
+            if (agoraEngine) {
+              await agoraEngine.leave();
+            }
+              // Then cleanup audio tracks
+              await cleanupAudioTracks();
+
+              if (callStatus === 'calling') {
+                toast({
+                  title: "Call Rejected",
+                  description: "The other party rejected the call",
+                });
+              }
+            }
+          });
+
+        channel.bind('call.ended', async (data: any) => {
+          if (data.session?.id === session.id) {
+            console.log("Handling ended call for session:", session.id);
+            await cleanupAudioTracks();
+            setCallStatus('idle');
+            setShowCallDialog(false);
+          }
+        });
+
+        return () => {
+          cleanupAudioTracks().catch(e => {
+            console.error("Cleanup error on unmount:", e);
+          });
+          channel.unbind_all();
+          pusher.unsubscribe(`user.${user.id}`);
+        };
+      } catch (error) {
+        console.error("Failed to initialize Pusher:", error);
+      }
+    };
+
+    initializePusher();
+  }, [user?.id]);
 
   const cleanupAudioTracks = async () => {
     try {
@@ -141,104 +259,6 @@ export function ReverendChatArea({
       console.error("Error during audio cleanup:", error);
     }
   };
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !user) return;
-
-    const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
-      cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
-    });
-
-    const channel = pusher.subscribe(`user.${user.id}`);
-
-    channel.bind('call.incoming', (data: any) => {
-      setIncomingCallData(data);
-      setCallStatus('incoming');
-      setShowCallDialog(true);
-    });
-
-    channel.bind('call.answered', async (data: any) => {
-      console.log("Call answered with data:", data);
-      if (data.session?.id === session.id) {
-        try {
-          // Extract Agora data from the response
-          const agoraData = data.agora || {
-            channel_name: `chat_session_${session.id}`,
-            token: data.token,
-            u_id: data.caller_id
-          };
-          
-          if (!agoraData.channel_name || !agoraData.token) {
-            throw new Error('Invalid Agora data received');
-          }
-
-          console.log("Joining call with Agora data:", agoraData);
-          await joinCall(agoraData.channel_name, agoraData.token, user?.id!);
-          setCallStatus('connected');
-        } catch (error) {
-          console.error("Error joining call after answer:", error);
-          await cleanupAudioTracks();
-          setCallStatus('idle');
-          setShowCallDialog(false);
-          toast({
-            variant: "destructive",
-            title: "Call Error",
-            description: "Failed to join the call. Please try again.",
-          });
-        }
-      }
-    });
-
-    channel.bind('call.rejected', async (data: any) => {
-      console.log("call.rejected event received", data.session?.id);
-      
-      if (data.session?.id === session.id) {
-        console.log("Handling rejected call for session:", session.id);
-        
-        // First update UI state
-        setCallStatus('idle');
-        setShowCallDialog(false);
-              // Clean up any existing audio tracks before rejecting
-      if (localAudioTrack) {
-        localAudioTrack.close();
-        setLocalAudioTrack(null);
-      }
-      if (remoteAudioTrack) {
-        remoteAudioTrack.close();
-        setRemoteAudioTrack(null);
-      }
-      if (agoraEngine) {
-        await agoraEngine.leave();
-      }
-        // Then cleanup audio tracks
-        await cleanupAudioTracks();
-
-        if (callStatus === 'calling') {
-          toast({
-            title: "Call Rejected",
-            description: "The other party rejected the call",
-          });
-        }
-      }
-    });
-
-    channel.bind('call.ended', async (data: any) => {
-      if (data.session?.id === session.id) {
-        console.log("Handling ended call for session:", session.id);
-        await cleanupAudioTracks();
-        setCallStatus('idle');
-        setShowCallDialog(false);
-      }
-    });
-
-    return () => {
-      cleanupAudioTracks().catch(e => {
-        console.error("Cleanup error on unmount:", e);
-      });
-      channel.unbind_all();
-      pusher.unsubscribe(`user.${user.id}`);
-    };
-  }, [user?.id, session.id, callStatus]);
 
   const handleInitiateCall = async () => {
     if (typeof window === 'undefined') return;
