@@ -72,6 +72,9 @@ export function ReverendChatArea({
   const [agoraEngine, setAgoraEngine] = useState<any>(null)
   const [localAudioTrack, setLocalAudioTrack] = useState<any>(null)
   const [remoteAudioTrack, setRemoteAudioTrack] = useState<any>(null)
+  const [localVolume, setLocalVolume] = useState(100);
+  const [remoteVolume, setRemoteVolume] = useState(100);
+  const [audioPlaybackError, setAudioPlaybackError] = useState<string | null>(null);
 
   // Initialize Agora client
   useEffect(() => {
@@ -434,6 +437,49 @@ export function ReverendChatArea({
     }
   };
 
+  const handleVolumeChange = async (isLocal: boolean, value: number) => {
+    try {
+      if (isLocal && localAudioTrack) {
+        await localAudioTrack.setVolume(value);
+        setLocalVolume(value);
+      } else if (!isLocal && remoteAudioTrack) {
+        await remoteAudioTrack.setVolume(value);
+        setRemoteVolume(value);
+      }
+    } catch (error) {
+      console.error("Error adjusting volume:", error);
+    }
+  };
+
+  const testAudioPlayback = async () => {
+    try {
+      if (!remoteAudioTrack) {
+        setAudioPlaybackError("No remote audio track available");
+        return;
+      }
+
+      // Try to play audio again
+      await remoteAudioTrack.stop();
+      await remoteAudioTrack.play();
+      
+      const isPlaying = remoteAudioTrack.isPlaying;
+      console.log("Audio playback test:", {
+        isPlaying,
+        volume: remoteAudioTrack.getVolume(),
+        state: remoteAudioTrack.getState()
+      });
+
+      if (!isPlaying) {
+        setAudioPlaybackError("Audio track is not playing");
+      } else {
+        setAudioPlaybackError(null);
+      }
+    } catch (error) {
+      console.error("Audio playback test failed:", error);
+      setAudioPlaybackError("Failed to play audio: " + (error as Error).message);
+    }
+  };
+
   // Only render if we're on the client side
   if (typeof window === 'undefined') {
     return null; // Or a loading state
@@ -612,6 +658,54 @@ export function ReverendChatArea({
             </Avatar>
             
             <h3 className="text-lg font-semibold">{session.user?.first_name || 'Anonymous'}</h3>
+            
+            {callStatus === 'connected' && (
+              <div className="w-full space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Your Microphone Volume</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={localVolume}
+                    onChange={(e) => handleVolumeChange(true, Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Other Person's Volume</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={remoteVolume}
+                    onChange={(e) => handleVolumeChange(false, Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+
+                <Button 
+                  onClick={testAudioPlayback}
+                  variant="outline" 
+                  className="w-full"
+                >
+                  Test Audio Playback
+                </Button>
+
+                {audioPlaybackError && (
+                  <p className="text-sm text-red-500 mt-2">{audioPlaybackError}</p>
+                )}
+
+                <div className="text-sm text-muted-foreground">
+                  <p>Audio Status:</p>
+                  <ul className="list-disc pl-4 mt-1">
+                    <li>Local Track: {localAudioTrack ? "Active" : "Not Active"}</li>
+                    <li>Remote Track: {remoteAudioTrack ? (remoteAudioTrack.isPlaying ? "Playing" : "Not Playing") : "Not Available"}</li>
+                  </ul>
+                </div>
+              </div>
+            )}
             
             <div className="flex gap-4">
               {callStatus === 'incoming' && (
