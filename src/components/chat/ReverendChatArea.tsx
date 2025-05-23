@@ -165,22 +165,33 @@ export function ReverendChatArea({
     });
 
     channel.bind('call.answered', async (data: any) => {
+      console.log("Call answered with data:", data);
       if (data.session?.id === session.id) {
-        console.log("Call answered with data:", data);
-        setCallStatus('connected');
-        
-        // Extract Agora data from the response
-        const agoraData = data.agora || {
-          channel_name: `chat_session_${session.id}`,
-          token: data.token,
-          u_id: data.caller_id
-        };
-        
-        if (agoraData) {
+        try {
+          // Extract Agora data from the response
+          const agoraData = data.agora || {
+            channel_name: `chat_session_${session.id}`,
+            token: data.token,
+            u_id: data.caller_id
+          };
+          
+          if (!agoraData.channel_name || !agoraData.token) {
+            throw new Error('Invalid Agora data received');
+          }
+
           console.log("Joining call with Agora data:", agoraData);
-          await joinCall(agoraData.channel_name, agoraData.token, agoraData.u_id);
-        } else {
-          console.error("No Agora data received in call.answered event");
+          await joinCall(agoraData.channel_name, agoraData.token, user?.id!);
+          setCallStatus('connected');
+        } catch (error) {
+          console.error("Error joining call after answer:", error);
+          await cleanupAudioTracks();
+          setCallStatus('idle');
+          setShowCallDialog(false);
+          toast({
+            variant: "destructive",
+            title: "Call Error",
+            description: "Failed to join the call. Please try again.",
+          });
         }
       }
     });
@@ -236,38 +247,6 @@ export function ReverendChatArea({
     };
   }, [user?.id, session.id, callStatus]);
 
-  const joinCall = async (channelName: string, token: string, uid: number) => {
-    if (typeof window === 'undefined' || !agoraEngine) return;
-
-    try {
-      await agoraEngine.join(
-        process.env.NEXT_PUBLIC_AGORA_APP_ID!,
-        channelName,
-        token,
-        uid
-      );
-
-      const localTrack = await AgoraRTC.createMicrophoneAudioTrack();
-      setLocalAudioTrack(localTrack);
-      await agoraEngine.publish(localTrack);
-
-      agoraEngine.on("user-published", async (user: any, mediaType: string) => {
-        await agoraEngine.subscribe(user, mediaType);
-        if (mediaType === "audio") {
-          setRemoteAudioTrack(user.audioTrack);
-          user.audioTrack.play();
-        }
-      });
-    } catch (error) {
-      console.error("Error joining call:", error);
-      toast({
-        variant: "destructive",
-        title: "Call Error",
-        description: "Failed to join the call. Please try again.",
-      });
-    }
-  };
-
   const handleInitiateCall = async () => {
     if (typeof window === 'undefined') return;
 
@@ -275,9 +254,10 @@ export function ReverendChatArea({
       setCallStatus('calling');
       setShowCallDialog(true);
       const response = await initiateCall(session.id);
-      if (response.channel_name && response.token) {
-        await joinCall(response.channel_name, response.token, user?.id!);
+      if (!response.channel_name || !response.token) {
+        throw new Error('Invalid response from call initiation');
       }
+      // Don't join the call yet - wait for answer
     } catch (error) {
       console.error('Failed to initiate call:', error);
       toast({
@@ -287,6 +267,44 @@ export function ReverendChatArea({
       });
       setCallStatus('idle');
       setShowCallDialog(false);
+    }
+  };
+
+  const joinCall = async (channelName: string, token: string, uid: number) => {
+    if (typeof window === 'undefined' || !agoraEngine) return;
+
+    try {
+      console.log("Joining call with:", { channelName, token, uid });
+      await agoraEngine.join(
+        process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+        channelName,
+        token,
+        uid
+      );
+
+      // Only create audio track after successfully joining the channel
+      console.log("Creating microphone audio track...");
+      const localTrack = await AgoraRTC.createMicrophoneAudioTrack();
+      setLocalAudioTrack(localTrack);
+      console.log("Publishing audio track...");
+      await agoraEngine.publish(localTrack);
+
+      agoraEngine.on("user-published", async (user: any, mediaType: string) => {
+        await agoraEngine.subscribe(user, mediaType);
+        if (mediaType === "audio") {
+          console.log("Received remote audio track");
+          setRemoteAudioTrack(user.audioTrack);
+          user.audioTrack.play();
+        }
+      });
+    } catch (error) {
+      console.error("Error joining call:", error);
+      await cleanupAudioTracks();
+      toast({
+        variant: "destructive",
+        title: "Call Error",
+        description: "Failed to join the call. Please try again.",
+      });
     }
   };
 
