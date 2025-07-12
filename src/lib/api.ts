@@ -120,3 +120,40 @@ export const rejectCall = async (sessionId: number) => {
   const response = await api.post(`/call/${sessionId}/reject`);
   return response.data;
 };
+
+// News related endpoints
+export const getAllNews = async () => {
+  const response = await api.get('/news');
+  return response.data;
+};
+
+export const createNews = async (newsData: {
+  post_title: string;
+  post_body: string;
+  post_catgry_id: number;
+}) => {
+  const response = await api.post('/news', newsData);
+  return response.data;
+};
+
+export const getNewsById = async (id: number) => {
+  const response = await api.get(`/news/${id}`);
+  return response.data;
+};
+
+export const updateNews = async (
+  id: number,
+  newsData: {
+    post_title: string;
+    post_body: string;
+    post_catgry_id: number;
+  }
+) => {
+  const response = await api.put(`/news/${id}`, newsData);
+  return response.data;
+};
+
+export const deleteNews = async (id: number) => {
+  const response = await api.delete(`/news/${id}`);
+  return response.data;
+};

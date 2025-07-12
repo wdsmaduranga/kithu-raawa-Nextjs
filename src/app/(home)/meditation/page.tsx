@@ -6,14 +6,20 @@ import { Categories } from "@/components/meditation/Categories"
 import { OngoingChats } from "@/components/meditation/OngoingChats"
 import { HandIcon as PrayingHands, Heart, BookOpen, MessageCircle } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useUserStore } from "@/stores/userStore"
 
 export default function MeditationPage() {
   const [mounted, setMounted] = useState(false)
+  const { user, fetchUser } = useUserStore()
 
   useEffect(() => {
     setMounted(true)
   }, [])
-
+  useEffect(() => {
+    if (!user) {
+      fetchUser();
+    }
+}, [user, fetchUser]);
   if (!mounted) return null
 
   return (
@@ -84,7 +90,7 @@ export default function MeditationPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.4, duration: 0.5 }}
         >
-          <Tabs defaultValue="ongoing" className="w-full">
+          {user ?(< Tabs defaultValue="ongoing" className="w-full">
             <div className="flex justify-center mb-6">
               <TabsList className="grid grid-cols-2 w-full max-w-md">
                 <TabsTrigger value="ongoing" className="flex items-center gap-2">
@@ -108,7 +114,7 @@ export default function MeditationPage() {
               </h2>
               <Categories />
             </TabsContent>
-          </Tabs>
+          </Tabs>) :'Logging Card'}
         </motion.div>
       </div>
     </div>

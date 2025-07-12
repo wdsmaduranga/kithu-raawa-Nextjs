@@ -70,6 +70,9 @@ export default function Header() {
                       <Link href="/event" className="transition-colors hover:text-primary">
                         Event
                       </Link>
+                      <Link href="/meditation" className="transition-colors hover:text-primary">
+                        Meditation
+                      </Link>
                      
                     </div>
                                     

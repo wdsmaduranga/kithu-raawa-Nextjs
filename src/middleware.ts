@@ -29,7 +29,7 @@ export async function middleware(request: NextRequest) {
 
     // Check if route requires admin access
     const isAdminRoute = request.nextUrl.pathname.startsWith('/admin')
-    if (isAdminRoute && user.user.user_role !== '1') {
+    if (isAdminRoute && user.user.user_role !== 1) {
       // User is not admin, redirect to home
       return NextResponse.redirect(new URL('/', request.url))
     }
@@ -53,6 +53,6 @@ export const config = {
   matcher: [
     '/admin/:path*',   // Protect all admin routes
     '/reverend/:path*', // Protect all reverend routes
-    '/meditation/:path*' // Protect meditation routes
+    // '/meditation/:path*' // Protect meditation routes
   ]
 }
